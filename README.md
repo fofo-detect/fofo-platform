@@ -33,9 +33,15 @@ detections. Billing is handled by Stripe.
 
 ## 1. Supabase setup
 
-1. Open your Supabase project (`https://hornmcxgscsjbwpdyosv.supabase.co`) → SQL Editor.
-2. Run `supabase/migrations/001_init.sql`. This creates `subscribers`, `scans`, and
-   `detections`, with indexes and RLS policies scoping each subscriber to their own rows.
+1. Open your Supabase project → SQL Editor.
+2. Run the migrations in `supabase/migrations/` in order:
+   - `001_init.sql` — creates `subscribers`, `scans`, and `detections`, with indexes and
+     RLS policies scoping each subscriber to their own rows.
+   - `002_scanned_urls.sql` — creates `scanned_urls`, which lets each scan skip any
+     candidate URL already checked for that subscriber in a previous scan.
+   - `003_reference_image_urls.sql` — adds `reference_image_urls` (array) to `subscribers`
+     so the scan endpoint can run one Google Lens search per enrolled photo instead of one
+     search total.
 3. Go to **Authentication → Providers** and make sure Email sign-up is enabled.
    - If "Confirm email" is ON, users won't get a session until they click the confirmation
      link, and `/auth/signup` returns `email_confirmation_required: true`. For a frictionless
@@ -123,23 +129,33 @@ Visit `http://localhost:3000`.
 
 ## User flow
 
-`/` → `/register` (Supabase Auth signup) → `/onboard` (upload 3 photos → `POST /enroll`, each
-indexed into an AWS Rekognition collection via `index_faces`, one photo mirrored to S3 as the
-SerpAPI search seed and Rekognition comparison source) → `/subscribe` (Stripe Checkout for
-₹50,000/mo or ₹500,000/yr) → `/dashboard` (detections table + "Run Scan Now", which calls
-`POST /scan/{subscriber_id}`).
+`/` → `/register` (Supabase Auth signup) → `/onboard` (live camera capture, up to 8 face angles
+via MediaPipe → `POST /enroll`, each angle indexed into an AWS Rekognition collection via
+`index_faces`, every enrolled photo mirrored to S3 — collectively the SerpAPI search seeds and
+Rekognition comparison source) → `/subscribe` (Stripe Checkout for ₹50,000/mo or ₹500,000/yr) →
+`/dashboard` (detections table + "Run Scan Now", which calls `POST /scan/{subscriber_id}`).
 
 ## Scan pipeline (`POST /scan/{subscriber_id}`)
 
-1. Load the subscriber's reference image URL from Supabase and download those bytes once.
-2. Query SerpAPI Google Lens with the reference image, take up to 59 visual matches.
-3. For each candidate: download the image, call AWS Rekognition `CompareFaces` against the
-   reference photo bytes (similarity threshold 80% for thumbnail-sized images, 90% for
-   full-size — higher similarity required for the higher-quality images).
-4. For each match: score deepfake probability via Sightengine.
-5. Classify risk (LOW/MEDIUM/HIGH/CRITICAL) and generate an alert message via Claude.
-6. Insert a `detections` row. If risk is HIGH or CRITICAL, send a WhatsApp alert via MSG91.
-7. Mark the `scans` row completed with candidate/match counts.
+1. Load the subscriber's enrolled reference image URLs from Supabase (up to 8) and download the
+   first one's bytes once, for the Rekognition comparison step below.
+2. Run a separate SerpAPI Google Lens search per enrolled reference image (up to 59 visual
+   matches each), merged and deduplicated by candidate image URL — up to ~472 raw candidates
+   from a full 8-angle enrollment.
+3. For each candidate: skip it if its URL is already in `scanned_urls` for this subscriber
+   (checked across all past scans, not just this one); otherwise record it there immediately so
+   future scans skip it too, regardless of whether it turns out to be a match. This is what
+   makes each scan only spend API calls on URLs never seen before, building cumulative coverage
+   over time instead of re-paying to re-check the same images every run.
+4. Download the image, call AWS Rekognition `CompareFaces` against the reference photo bytes
+   (similarity threshold 80% for thumbnail-sized images, 90% for full-size — higher similarity
+   required for the higher-quality images).
+5. On a match: skip it if a `detections` row already exists for this exact image_url and
+   subscriber (a second, defensive dedup check independent of `scanned_urls`).
+6. Score deepfake probability via Sightengine.
+7. Classify risk (LOW/MEDIUM/HIGH/CRITICAL) and generate an alert message via Claude.
+8. Insert a `detections` row. If risk is HIGH or CRITICAL, send a WhatsApp alert via MSG91.
+9. Mark the `scans` row completed with candidate/match counts.
 
 Note: the `distance_score` column/field name in the DB and API predates the Rekognition switch
 and is kept as-is to avoid a schema migration — it now holds a 0-100 similarity percentage
@@ -147,11 +163,20 @@ and is kept as-is to avoid a schema migration — it now holds a 0-100 similarit
 
 ## Notes on scale
 
-The scan endpoint runs synchronously (download + Rekognition + Sightengine + Claude per
-candidate, up to 59 candidates). This is simple and correct for an initial launch; if scan
-latency becomes a problem under load, move `run_scan` into a background worker (e.g. a Railway
-cron service or a queue) and have the dashboard poll `GET /detections/{subscriber_id}` instead
-of waiting on the POST.
+`POST /scan/{subscriber_id}` returns immediately (202) and runs the actual work — download +
+Rekognition + Sightengine + Claude per candidate — via FastAPI `BackgroundTasks`. The dashboard
+polls `GET /scan/{scan_id}/status` every 5s and refreshes detections once it flips to
+`completed`. This exists because a full scan easily exceeds Railway's ~5-minute proxy timeout;
+without it, the client connection gets killed with a 502 well before the backend finishes (and
+the backend keeps working regardless — it just has nowhere to send the response).
+
+A first scan against a full 8-angle enrollment can search up to ~472 raw candidates (59 per
+enrolled photo, deduplicated). Wall-clock time scales accordingly — expect significantly longer
+than the 5-7 minutes a single-search scan took. `scanned_urls` is what keeps this sustainable:
+every URL a scan touches is recorded there regardless of match outcome, so subsequent scans for
+the same subscriber skip anything already checked and only spend Rekognition/Sightengine/Claude
+calls on genuinely new candidates — later scans should get progressively faster and cheaper as
+a subscriber's cumulative coverage builds up.
 
 ## Security notes
 

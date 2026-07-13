@@ -44,13 +44,22 @@ async def enroll(subscriber_id: str = Form(...), files: list[UploadFile] = File(
     except FaceNotDetectedError as exc:
         raise HTTPException(status_code=422, detail=f"Could not enroll: {exc}") from exc
 
-    update_payload: dict = {}
+    # Every enrolled photo is uploaded, not just one - the scan endpoint runs a
+    # separate Google Lens search per reference image, so more enrolled angles
+    # means more search seeds and a wider net of candidates per scan.
+    reference_image_urls: list[str] = []
+    for image_bytes in images:
+        try:
+            reference_image_urls.append(
+                upload_enrollment_photo(subscriber_id=subscriber_id, image_bytes=image_bytes)
+            )
+        except S3UploadError as exc:
+            logger.warning("Skipping one reference image upload for %s: %s", subscriber_id, exc)
 
-    try:
-        reference_image_url = upload_enrollment_photo(subscriber_id=subscriber_id, image_bytes=images[0])
-        update_payload["reference_image_url"] = reference_image_url
-    except S3UploadError as exc:
-        logger.warning("Skipping reference image upload for %s: %s", subscriber_id, exc)
+    update_payload: dict = {}
+    if reference_image_urls:
+        update_payload["reference_image_url"] = reference_image_urls[0]
+        update_payload["reference_image_urls"] = reference_image_urls
 
     if update_payload:
         supabase.table("subscribers").update(update_payload).eq("id", subscriber_id).execute()

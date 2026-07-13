@@ -28,6 +28,9 @@ def _now() -> str:
 
 
 def _search_google_lens(image_url: str, max_results: int) -> list[dict]:
+    """One Google Lens search seeded by a single reference photo. Called once per
+    enrolled image in a scan - max_results caps each individual search, not the
+    scan as a whole."""
     settings = get_settings()
     params = {"engine": "google_lens", "url": image_url, "api_key": settings.serpapi_key}
     try:
@@ -42,6 +45,35 @@ def _search_google_lens(image_url: str, max_results: int) -> list[dict]:
 
     visual_matches = data.get("visual_matches", [])
     return visual_matches[:max_results]
+
+
+def _search_all_reference_images(reference_image_urls: list[str], max_results_each: int) -> list[dict]:
+    """Run a separate Google Lens search per enrolled photo and merge the results,
+    deduplicated by candidate image URL (the same match often turns up from more
+    than one reference photo). Any individual search that fails is logged and
+    skipped rather than failing the whole scan - only fail outright if every
+    single search fails.
+    """
+    merged: dict[str, dict] = {}
+    failures = 0
+
+    for image_url in reference_image_urls:
+        try:
+            results = _search_google_lens(image_url, max_results_each)
+        except RuntimeError as exc:
+            failures += 1
+            logger.warning("Google Lens search failed for reference image %s: %s", image_url, exc)
+            continue
+
+        for candidate in results:
+            candidate_url = candidate.get("image") or candidate.get("thumbnail")
+            if candidate_url and candidate_url not in merged:
+                merged[candidate_url] = candidate
+
+    if failures == len(reference_image_urls):
+        raise RuntimeError("All Google Lens searches failed")
+
+    return list(merged.values())
 
 
 def _derive_platform(source_url: Optional[str]) -> Optional[str]:
@@ -60,26 +92,64 @@ def _fail_scan(scan_id: str) -> None:
     ).eq("id", scan_id).execute()
 
 
-def _run_scan_background(subscriber_id: str, scan_id: str, reference_image_url: str, subscriber_data: dict) -> None:
+def _is_url_already_scanned(supabase, subscriber_id: str, url: str) -> bool:
+    result = (
+        supabase.table("scanned_urls")
+        .select("id")
+        .eq("subscriber_id", subscriber_id)
+        .eq("url", url)
+        .limit(1)
+        .execute()
+    )
+    return len(result.data) > 0
+
+
+def _mark_url_scanned(supabase, subscriber_id: str, url: str) -> None:
+    try:
+        supabase.table("scanned_urls").insert(
+            {"subscriber_id": subscriber_id, "url": url, "first_checked_at": _now()}
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 - a duplicate-key race here should never abort the candidate
+        logger.warning("Could not record scanned_urls entry for %s: %s", url, exc)
+
+
+def _detection_already_exists(supabase, subscriber_id: str, image_url: str) -> bool:
+    result = (
+        supabase.table("detections")
+        .select("id")
+        .eq("subscriber_id", subscriber_id)
+        .eq("image_url", image_url)
+        .limit(1)
+        .execute()
+    )
+    return len(result.data) > 0
+
+
+def _run_scan_background(
+    subscriber_id: str, scan_id: str, reference_image_urls: list[str], subscriber_data: dict
+) -> None:
     """The actual scan work. Runs after the HTTP response has already been sent -
-    a full scan (up to 59 candidates through Rekognition/Sightengine/Claude) takes
-    5-7+ minutes, longer than Railway's proxy will hold a client connection open.
+    a full scan (up to 59 candidates per reference image, through Rekognition/
+    Sightengine/Claude) takes far longer than Railway's proxy will hold a client
+    connection open.
     """
     settings = get_settings()
     supabase = get_supabase()
 
     try:
-        reference_image_bytes = face_matcher.download_image(reference_image_url)
+        # Rekognition CompareFaces only needs one good source image per candidate
+        # comparison, unlike the Google Lens search below which benefits from
+        # searching with every enrolled angle - so only the first reference photo
+        # is downloaded and normalized here.
+        reference_image_bytes = face_matcher.download_image(reference_image_urls[0])
         if reference_image_bytes is None:
             logger.error("Scan %s failed: could not fetch subscriber's reference photo", scan_id)
             _fail_scan(scan_id)
             return
-        # Normalized once here rather than inside match_candidate, which would
-        # otherwise re-encode this same reference photo on every candidate.
         reference_image_bytes = normalize_to_jpeg_bytes(reference_image_bytes)
 
         try:
-            candidates = _search_google_lens(reference_image_url, settings.max_candidates_per_scan)
+            candidates = _search_all_reference_images(reference_image_urls, settings.max_candidates_per_scan)
         except RuntimeError as exc:
             logger.error("Scan %s failed during SerpAPI search: %s", scan_id, exc)
             _fail_scan(scan_id)
@@ -94,8 +164,20 @@ def _run_scan_background(subscriber_id: str, scan_id: str, reference_image_url: 
                 continue
 
             try:
+                # Cross-scan dedup: never re-download/re-compare a URL this
+                # subscriber has already had checked in a previous scan, whether
+                # or not it turned out to be a match.
+                if _is_url_already_scanned(supabase, subscriber_id, candidate_image_url):
+                    continue
+                _mark_url_scanned(supabase, subscriber_id, candidate_image_url)
+
                 match_result = face_matcher.match_candidate(reference_image_bytes, candidate_image_url)
                 if not match_result.is_match:
+                    continue
+
+                # Belt-and-braces: don't insert a second detections row for the
+                # same image even if it somehow slipped past the scanned_urls gate.
+                if _detection_already_exists(supabase, subscriber_id, candidate_image_url):
                     continue
 
                 matches_found += 1
@@ -174,8 +256,15 @@ def run_scan(subscriber_id: str, background_tasks: BackgroundTasks):
     if not subscriber.data:
         raise HTTPException(status_code=404, detail="Subscriber not found")
 
-    reference_image_url = subscriber.data.get("reference_image_url")
-    if not reference_image_url:
+    # reference_image_urls (plural) holds every enrolled angle from the camera
+    # capture flow. Older subscribers enrolled before that existed only have the
+    # singular reference_image_url, so fall back to a one-element list.
+    reference_image_urls = subscriber.data.get("reference_image_urls")
+    if not reference_image_urls:
+        single = subscriber.data.get("reference_image_url")
+        reference_image_urls = [single] if single else []
+
+    if not reference_image_urls:
         raise HTTPException(status_code=400, detail="Subscriber has not completed face enrollment")
 
     started_at = _now()
@@ -194,7 +283,9 @@ def run_scan(subscriber_id: str, background_tasks: BackgroundTasks):
     )
     scan_id = scan_insert.data[0]["id"]
 
-    background_tasks.add_task(_run_scan_background, subscriber_id, scan_id, reference_image_url, subscriber.data)
+    background_tasks.add_task(
+        _run_scan_background, subscriber_id, scan_id, reference_image_urls, subscriber.data
+    )
 
     return ScanResponse(
         scan_id=scan_id,

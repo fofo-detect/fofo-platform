@@ -46,6 +46,7 @@ export default function RegisterPage() {
             id="name"
             label="Full name"
             required
+            autoComplete="name"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             placeholder="Jane Doe"
@@ -55,6 +56,7 @@ export default function RegisterPage() {
             label="Email"
             type="email"
             required
+            autoComplete="email"
             value={form.email}
             onChange={(e) => setForm({ ...form, email: e.target.value })}
             placeholder="jane@example.com"
@@ -64,6 +66,7 @@ export default function RegisterPage() {
             label="Phone (WhatsApp)"
             type="tel"
             required
+            autoComplete="tel"
             value={form.phone}
             onChange={(e) => setForm({ ...form, phone: e.target.value })}
             placeholder="+91 98765 43210"
@@ -74,6 +77,7 @@ export default function RegisterPage() {
             type="password"
             required
             minLength={8}
+            autoComplete="new-password"
             value={form.password}
             onChange={(e) => setForm({ ...form, password: e.target.value })}
             placeholder="At least 8 characters"

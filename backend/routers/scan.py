@@ -1,6 +1,8 @@
+import asyncio
+import concurrent.futures
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -21,20 +23,21 @@ router = APIRouter(tags=["scan"])
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
 SERPAPI_TIMEOUT_SECONDS = 30.0
 ALERTABLE_RISK_LEVELS = {RiskLevel.HIGH, RiskLevel.CRITICAL}
+CANDIDATE_CONCURRENCY = 10
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _search_google_lens(image_url: str, max_results: int) -> list[dict]:
-    """One Google Lens search seeded by a single reference photo. Called once per
-    enrolled image in a scan - max_results caps each individual search, not the
-    scan as a whole."""
+async def _search_google_lens_async(client: httpx.AsyncClient, image_url: str, max_results: int) -> list[dict]:
+    """Async counterpart of a single Google Lens search, so every enrolled
+    reference photo can be searched concurrently via asyncio.gather() instead
+    of one request at a time."""
     settings = get_settings()
     params = {"engine": "google_lens", "url": image_url, "api_key": settings.serpapi_key}
     try:
-        resp = httpx.get(SERPAPI_ENDPOINT, params=params, timeout=SERPAPI_TIMEOUT_SECONDS)
+        resp = await client.get(SERPAPI_ENDPOINT, params=params, timeout=SERPAPI_TIMEOUT_SECONDS)
         resp.raise_for_status()
         data = resp.json()
     except (httpx.HTTPError, httpx.TimeoutException) as exc:
@@ -47,22 +50,35 @@ def _search_google_lens(image_url: str, max_results: int) -> list[dict]:
     return visual_matches[:max_results]
 
 
+async def _gather_searches(
+    reference_image_urls: list[str], max_results_each: int
+) -> list[Union[list[dict], BaseException]]:
+    async with httpx.AsyncClient() as client:
+        return await asyncio.gather(
+            *[_search_google_lens_async(client, url, max_results_each) for url in reference_image_urls],
+            return_exceptions=True,
+        )
+
+
 def _search_all_reference_images(reference_image_urls: list[str], max_results_each: int) -> list[dict]:
-    """Run a separate Google Lens search per enrolled photo and merge the results,
-    deduplicated by candidate image URL (the same match often turns up from more
-    than one reference photo). Any individual search that fails is logged and
-    skipped rather than failing the whole scan - only fail outright if every
-    single search fails.
+    """Search every enrolled photo concurrently (asyncio.gather, not a
+    sequential loop) and merge the results, deduplicated by candidate image
+    URL - the same match often turns up from more than one reference photo.
+    An individual search failure is logged and skipped rather than failing
+    the whole scan; only fail outright if every single search fails.
+
+    asyncio.run() is safe here because this whole function runs inside a
+    BackgroundTasks worker thread, not on FastAPI's main event loop thread.
     """
+    results_per_search = asyncio.run(_gather_searches(reference_image_urls, max_results_each))
+
     merged: dict[str, dict] = {}
     failures = 0
 
-    for image_url in reference_image_urls:
-        try:
-            results = _search_google_lens(image_url, max_results_each)
-        except RuntimeError as exc:
+    for image_url, results in zip(reference_image_urls, results_per_search):
+        if isinstance(results, BaseException):
             failures += 1
-            logger.warning("Google Lens search failed for reference image %s: %s", image_url, exc)
+            logger.warning("Google Lens search failed for reference image %s: %s", image_url, results)
             continue
 
         for candidate in results:
@@ -125,12 +141,106 @@ def _detection_already_exists(supabase, subscriber_id: str, image_url: str) -> b
     return len(result.data) > 0
 
 
+def _process_candidate(
+    candidate: dict,
+    subscriber_id: str,
+    scan_id: str,
+    reference_image_bytes: bytes,
+    subscriber_data: dict,
+) -> bool:
+    """Full per-candidate pipeline: dedup check, Rekognition face comparison,
+    deepfake scoring, risk classification, alerting, and the detections
+    insert. Runs inside a thread pool (up to CANDIDATE_CONCURRENCY at once,
+    since boto3/httpx here are synchronous - this is genuine thread-level
+    parallelism, not asyncio). Every failure mode is caught internally so a
+    single bad candidate never propagates out of the pool. Returns True if
+    this candidate produced a new detection.
+    """
+    supabase = get_supabase()
+    candidate_image_url = candidate.get("image") or candidate.get("thumbnail")
+    source_url = candidate.get("link")
+    if not candidate_image_url:
+        return False
+
+    try:
+        # Cross-scan dedup: never re-download/re-compare a URL this subscriber
+        # has already had checked in a previous scan, whether or not it turned
+        # out to be a match.
+        if _is_url_already_scanned(supabase, subscriber_id, candidate_image_url):
+            return False
+        _mark_url_scanned(supabase, subscriber_id, candidate_image_url)
+
+        match_result = face_matcher.match_candidate(reference_image_bytes, candidate_image_url)
+        if not match_result.is_match:
+            return False
+
+        # Belt-and-braces: don't insert a second detections row for the same
+        # image even if it somehow slipped past the scanned_urls gate.
+        if _detection_already_exists(supabase, subscriber_id, candidate_image_url):
+            return False
+
+        platform = _derive_platform(source_url or candidate.get("source"))
+
+        deepfake_score: Optional[float] = None
+        try:
+            deepfake_score = get_deepfake_score(candidate_image_url)
+        except SightengineError as exc:
+            logger.warning("Sightengine scoring failed for %s: %s", candidate_image_url, exc)
+
+        try:
+            classification = classify_detection(
+                platform=platform,
+                source_url=source_url,
+                image_url=candidate_image_url,
+                distance_score=match_result.distance,
+                deepfake_score=deepfake_score,
+            )
+            risk_level = classification.risk_level
+            alert_message = classification.alert_message
+        except ClaudeClassificationError as exc:
+            logger.error("Claude classification failed for detection: %s", exc)
+            risk_level = RiskLevel.MEDIUM
+            alert_message = "Automatic risk classification failed; manual review recommended."
+
+        detection_row = {
+            "subscriber_id": subscriber_id,
+            "scan_id": scan_id,
+            "image_url": candidate_image_url,
+            "source_url": source_url,
+            "platform": platform,
+            "distance_score": match_result.distance,
+            "deepfake_score": deepfake_score,
+            "risk_level": risk_level.value,
+            "alert_message": alert_message,
+        }
+
+        if risk_level in ALERTABLE_RISK_LEVELS and subscriber_data.get("phone"):
+            try:
+                whatsapp.send_detection_alert(
+                    phone=subscriber_data["phone"],
+                    subscriber_name=subscriber_data.get("name") or "there",
+                    platform=platform,
+                    risk_level=risk_level.value,
+                    alert_message=alert_message,
+                    source_url=source_url,
+                )
+                detection_row["alerted_at"] = _now()
+            except WhatsAppSendError as exc:
+                logger.error("WhatsApp alert failed for subscriber %s: %s", subscriber_id, exc)
+
+        supabase.table("detections").insert(detection_row).execute()
+        return True
+    except Exception as exc:  # noqa: BLE001 - one bad candidate must not abort the whole scan
+        logger.error("Skipping candidate %s after unexpected error: %s", candidate_image_url, exc)
+        return False
+
+
 def _run_scan_background(
     subscriber_id: str, scan_id: str, reference_image_urls: list[str], subscriber_data: dict
 ) -> None:
     """The actual scan work. Runs after the HTTP response has already been sent -
-    a full scan (up to 59 candidates per reference image, through Rekognition/
-    Sightengine/Claude) takes far longer than Railway's proxy will hold a client
+    even parallelized, a full scan (Rekognition/Sightengine/Claude across up to
+    ~472 candidates) takes longer than Railway's proxy will hold a client
     connection open.
     """
     settings = get_settings()
@@ -155,85 +265,16 @@ def _run_scan_background(
             _fail_scan(scan_id)
             return
 
-        matches_found = 0
-
-        for candidate in candidates:
-            candidate_image_url = candidate.get("image") or candidate.get("thumbnail")
-            source_url = candidate.get("link")
-            if not candidate_image_url:
-                continue
-
-            try:
-                # Cross-scan dedup: never re-download/re-compare a URL this
-                # subscriber has already had checked in a previous scan, whether
-                # or not it turned out to be a match.
-                if _is_url_already_scanned(supabase, subscriber_id, candidate_image_url):
-                    continue
-                _mark_url_scanned(supabase, subscriber_id, candidate_image_url)
-
-                match_result = face_matcher.match_candidate(reference_image_bytes, candidate_image_url)
-                if not match_result.is_match:
-                    continue
-
-                # Belt-and-braces: don't insert a second detections row for the
-                # same image even if it somehow slipped past the scanned_urls gate.
-                if _detection_already_exists(supabase, subscriber_id, candidate_image_url):
-                    continue
-
-                matches_found += 1
-                platform = _derive_platform(source_url or candidate.get("source"))
-
-                deepfake_score: Optional[float] = None
-                try:
-                    deepfake_score = get_deepfake_score(candidate_image_url)
-                except SightengineError as exc:
-                    logger.warning("Sightengine scoring failed for %s: %s", candidate_image_url, exc)
-
-                try:
-                    classification = classify_detection(
-                        platform=platform,
-                        source_url=source_url,
-                        image_url=candidate_image_url,
-                        distance_score=match_result.distance,
-                        deepfake_score=deepfake_score,
-                    )
-                    risk_level = classification.risk_level
-                    alert_message = classification.alert_message
-                except ClaudeClassificationError as exc:
-                    logger.error("Claude classification failed for detection: %s", exc)
-                    risk_level = RiskLevel.MEDIUM
-                    alert_message = "Automatic risk classification failed; manual review recommended."
-
-                detection_row = {
-                    "subscriber_id": subscriber_id,
-                    "scan_id": scan_id,
-                    "image_url": candidate_image_url,
-                    "source_url": source_url,
-                    "platform": platform,
-                    "distance_score": match_result.distance,
-                    "deepfake_score": deepfake_score,
-                    "risk_level": risk_level.value,
-                    "alert_message": alert_message,
-                }
-
-                if risk_level in ALERTABLE_RISK_LEVELS and subscriber_data.get("phone"):
-                    try:
-                        whatsapp.send_detection_alert(
-                            phone=subscriber_data["phone"],
-                            subscriber_name=subscriber_data.get("name") or "there",
-                            platform=platform,
-                            risk_level=risk_level.value,
-                            alert_message=alert_message,
-                            source_url=source_url,
-                        )
-                        detection_row["alerted_at"] = _now()
-                    except WhatsAppSendError as exc:
-                        logger.error("WhatsApp alert failed for subscriber %s: %s", subscriber_id, exc)
-
-                supabase.table("detections").insert(detection_row).execute()
-            except Exception as exc:  # noqa: BLE001 - one bad candidate must not abort the whole scan
-                logger.error("Skipping candidate %s after unexpected error: %s", candidate_image_url, exc)
-                continue
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CANDIDATE_CONCURRENCY) as executor:
+            results = list(
+                executor.map(
+                    lambda candidate: _process_candidate(
+                        candidate, subscriber_id, scan_id, reference_image_bytes, subscriber_data
+                    ),
+                    candidates,
+                )
+            )
+        matches_found = sum(1 for is_new_detection in results if is_new_detection)
 
         supabase.table("scans").update(
             {

@@ -1,0 +1,38 @@
+# Railway builds backend/Dockerfile with the repo root as build context, so
+# this file (not backend/.dockerignore) is what Docker actually reads. Keep
+# it here, not in backend/ - Docker only looks for .dockerignore at the
+# context root.
+
+# Env files with real secrets
+.env
+.env.local
+.env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
+!*.env.example
+!**/*.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+**/.venv/
+**/venv/
+.pytest_cache/
+
+# Node / Next.js (irrelevant to the backend image, but harmless to exclude)
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+out/
+frontend/.vercel
+
+# Git / editor / misc
+.git/
+.gitignore
+.claude/
+*.log
+.DS_Store

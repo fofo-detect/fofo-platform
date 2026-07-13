@@ -11,10 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY . .
+COPY backend/ .
 
 EXPOSE 8000
 

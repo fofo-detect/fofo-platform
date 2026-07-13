@@ -1,12 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { RiskBadge } from "@/components/ui/Badge";
-import { ApiError, Detection, listDetections, runScan } from "@/lib/api";
+import { ApiError, Detection, getScanStatus, listDetections, runScan } from "@/lib/api";
 import { clearSession, getSession } from "@/lib/session";
+
+const POLL_INTERVAL_MS = 5000;
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -16,6 +18,7 @@ export default function DashboardPage() {
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastScanTime, setLastScanTime] = useState<string | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchDetections = useCallback(async (id: string) => {
     setLoading(true);
@@ -40,17 +43,52 @@ export default function DashboardPage() {
     fetchDetections(session.subscriberId);
   }, [router, fetchDetections]);
 
+  // Stop polling if the user navigates away mid-scan.
+  useEffect(() => {
+    return () => {
+      if (pollTimer.current) clearInterval(pollTimer.current);
+    };
+  }, []);
+
+  function stopPolling() {
+    if (pollTimer.current) {
+      clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }
+
   async function handleRunScan() {
-    if (!subscriberId) return;
+    if (!subscriberId || scanning) return;
     setScanning(true);
     setError(null);
     try {
       const scan = await runScan(subscriberId);
-      setLastScanTime(scan.completed_at ?? new Date().toISOString());
-      await fetchDetections(subscriberId);
+
+      // A full scan takes several minutes (Rekognition + Sightengine + Claude
+      // per candidate), longer than a browser or proxy will hold a single
+      // request open, so the backend runs it in the background and we poll
+      // for the result instead of waiting on the POST.
+      pollTimer.current = setInterval(async () => {
+        try {
+          const status = await getScanStatus(scan.scan_id);
+          if (status.status === "completed") {
+            stopPolling();
+            setScanning(false);
+            setLastScanTime(status.completed_at ?? new Date().toISOString());
+            await fetchDetections(subscriberId);
+          } else if (status.status === "failed") {
+            stopPolling();
+            setScanning(false);
+            setError("Scan failed. Please try again.");
+          }
+        } catch (err) {
+          stopPolling();
+          setScanning(false);
+          setError(err instanceof ApiError ? err.message : "Lost track of the scan. Please try again.");
+        }
+      }, POLL_INTERVAL_MS);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Scan failed. Please try again.");
-    } finally {
+      setError(err instanceof ApiError ? err.message : "Could not start scan. Please try again.");
       setScanning(false);
     }
   }
@@ -69,10 +107,16 @@ export default function DashboardPage() {
             {detections.length} detection{detections.length === 1 ? "" : "s"} found
             {lastScanTime ? ` · last scan ${new Date(lastScanTime).toLocaleString()}` : ""}
           </p>
+          {scanning && (
+            <p className="mt-1 text-xs text-neutral-500">
+              Scanning the internet for matches — this typically takes a few minutes. You can
+              leave this page and come back; the scan keeps running.
+            </p>
+          )}
         </div>
         <div className="flex gap-3">
-          <Button onClick={handleRunScan} loading={scanning}>
-            {scanning ? "Scanning the web…" : "Run Scan Now"}
+          <Button onClick={handleRunScan} loading={scanning} disabled={scanning}>
+            {scanning ? "Scanning…" : "Run Scan Now"}
           </Button>
           <Button variant="secondary" onClick={handleLogout}>
             Log out

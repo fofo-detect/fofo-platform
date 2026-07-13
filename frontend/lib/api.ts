@@ -33,7 +33,7 @@ export interface AuthResponse {
 export interface EnrollResponse {
   subscriber_id: string;
   message: string;
-  vector_dimensions: number;
+  faces_indexed: number;
 }
 
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -111,6 +111,11 @@ export async function listDetections(subscriberId: string): Promise<DetectionsLi
 
 export async function runScan(subscriberId: string): Promise<ScanResponse> {
   const res = await fetch(`${API_URL}/scan/${subscriberId}`, { method: "POST" });
+  return handleResponse<ScanResponse>(res);
+}
+
+export async function getScanStatus(scanId: string): Promise<ScanResponse> {
+  const res = await fetch(`${API_URL}/scan/${scanId}/status`, { cache: "no-store" });
   return handleResponse<ScanResponse>(res);
 }
 

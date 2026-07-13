@@ -8,6 +8,7 @@ import httpx
 from botocore.exceptions import ClientError
 
 from core.config import get_settings
+from services.face_encoder import normalize_to_jpeg_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,12 @@ def _is_thumbnail(image_bytes: bytes) -> bool:
 
 def match_candidate(reference_image_bytes: bytes, candidate_url: str) -> MatchResult:
     """Download a candidate image and compare it against the subscriber's reference
-    face photo via AWS Rekognition CompareFaces."""
+    face photo via AWS Rekognition CompareFaces.
+
+    reference_image_bytes must already be JPEG/PNG (normalize_to_jpeg_bytes) -
+    normalizing it here too would mean re-encoding the same reference photo on
+    every single candidate instead of once per scan.
+    """
     settings = get_settings()
     image_bytes = download_image(candidate_url)
     if image_bytes is None:
@@ -78,11 +84,17 @@ def match_candidate(reference_image_bytes: bytes, candidate_url: str) -> MatchRe
         else settings.face_match_similarity_threshold_full
     )
 
+    # AWS Rekognition only accepts JPEG/PNG - candidates scraped from the web
+    # arrive in every format (WebP, GIF, BMP, ...), and would otherwise be
+    # silently dropped with InvalidImageFormatException despite being valid,
+    # real, sometimes-matching photos.
+    normalized_image_bytes = normalize_to_jpeg_bytes(image_bytes)
+
     client = _rekognition_client()
     try:
         response = client.compare_faces(
             SourceImage={"Bytes": reference_image_bytes},
-            TargetImage={"Bytes": image_bytes},
+            TargetImage={"Bytes": normalized_image_bytes},
             SimilarityThreshold=0,
         )
     except ClientError as exc:

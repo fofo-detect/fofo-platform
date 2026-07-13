@@ -11,6 +11,7 @@ from core.supabase_client import get_supabase
 from models.schemas import RiskLevel, ScanResponse, ScanStatus
 from services import face_matcher, whatsapp
 from services.claude_classifier import ClaudeClassificationError, classify_detection
+from services.face_encoder import normalize_to_jpeg_bytes
 from services.sightengine import SightengineError, get_deepfake_score
 from services.whatsapp import WhatsAppSendError
 
@@ -73,6 +74,9 @@ def _run_scan_background(subscriber_id: str, scan_id: str, reference_image_url: 
             logger.error("Scan %s failed: could not fetch subscriber's reference photo", scan_id)
             _fail_scan(scan_id)
             return
+        # Normalized once here rather than inside match_candidate, which would
+        # otherwise re-encode this same reference photo on every candidate.
+        reference_image_bytes = normalize_to_jpeg_bytes(reference_image_bytes)
 
         try:
             candidates = _search_google_lens(reference_image_url, settings.max_candidates_per_scan)

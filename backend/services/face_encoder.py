@@ -1,4 +1,5 @@
 import logging
+from io import BytesIO
 
 import boto3
 from botocore.exceptions import ClientError
@@ -10,6 +11,24 @@ logger = logging.getLogger(__name__)
 
 class FaceNotDetectedError(Exception):
     pass
+
+
+def normalize_to_jpeg_bytes(image_bytes: bytes) -> bytes:
+    """Re-encode as JPEG so AWS Rekognition, which only accepts JPEG/PNG, never
+    rejects a genuinely valid photo just because it arrived as WebP/GIF/BMP/etc.
+    Returns the original bytes unchanged if they can't be decoded as an image
+    at all - the caller's existing error handling deals with that case.
+    """
+    from PIL import Image, UnidentifiedImageError  # lazy: keeps Pillow off the startup path
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            rgb = img.convert("RGB")
+            buf = BytesIO()
+            rgb.save(buf, format="JPEG", quality=90)
+            return buf.getvalue()
+    except UnidentifiedImageError:
+        return image_bytes
 
 
 def _client():
@@ -39,6 +58,7 @@ def index_face_bytes(subscriber_id: str, image_bytes: bytes) -> str:
     settings = get_settings()
     client = _client()
     _ensure_collection_exists(client, settings.aws_rekognition_collection_id)
+    image_bytes = normalize_to_jpeg_bytes(image_bytes)
 
     try:
         response = client.index_faces(

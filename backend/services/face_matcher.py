@@ -1,13 +1,13 @@
 import logging
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Optional
 
-import cv2
+import boto3
 import httpx
-import numpy as np
+from botocore.exceptions import ClientError
 
 from core.config import get_settings
-from services.face_encoder import FaceNotDetectedError, encode_face_from_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +19,22 @@ MAX_IMAGE_BYTES = 15 * 1024 * 1024
 @dataclass
 class MatchResult:
     is_match: bool
+    # AWS Rekognition CompareFaces similarity score, 0-100 (higher = more
+    # similar) — not a distance metric, despite the field name kept for
+    # compatibility with the existing `distance_score` DB column / API field.
     distance: Optional[float]
     is_thumbnail: bool
     error: Optional[str] = None
 
 
-def _euclidean_l2_distance(vec_a: list[float], vec_b: list[float]) -> float:
-    a = np.array(vec_a, dtype=np.float64)
-    b = np.array(vec_b, dtype=np.float64)
-    a_norm = a / (np.linalg.norm(a) or 1.0)
-    b_norm = b / (np.linalg.norm(b) or 1.0)
-    return float(np.linalg.norm(a_norm - b_norm))
+def _rekognition_client():
+    settings = get_settings()
+    return boto3.client(
+        "rekognition",
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        region_name=settings.aws_region,
+    )
 
 
 def download_image(url: str) -> Optional[bytes]:
@@ -48,16 +53,19 @@ def download_image(url: str) -> Optional[bytes]:
 
 
 def _is_thumbnail(image_bytes: bytes) -> bool:
-    arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
+    from PIL import Image, UnidentifiedImageError  # lazy: keeps Pillow off the startup path
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            width, height = img.size
+    except UnidentifiedImageError:
         return True
-    h, w = img.shape[:2]
-    return max(h, w) <= THUMBNAIL_MAX_DIMENSION
+    return max(width, height) <= THUMBNAIL_MAX_DIMENSION
 
 
-def match_candidate(reference_vector: list[float], candidate_url: str) -> MatchResult:
-    """Download a candidate image and compare it against the subscriber's reference face vector."""
+def match_candidate(reference_image_bytes: bytes, candidate_url: str) -> MatchResult:
+    """Download a candidate image and compare it against the subscriber's reference
+    face photo via AWS Rekognition CompareFaces."""
     settings = get_settings()
     image_bytes = download_image(candidate_url)
     if image_bytes is None:
@@ -65,15 +73,25 @@ def match_candidate(reference_vector: list[float], candidate_url: str) -> MatchR
 
     is_thumb = _is_thumbnail(image_bytes)
     threshold = (
-        settings.face_match_distance_threshold_thumbnail
+        settings.face_match_similarity_threshold_thumbnail
         if is_thumb
-        else settings.face_match_distance_threshold_full
+        else settings.face_match_similarity_threshold_full
     )
 
+    client = _rekognition_client()
     try:
-        candidate_vector = encode_face_from_bytes(image_bytes)
-    except FaceNotDetectedError:
+        response = client.compare_faces(
+            SourceImage={"Bytes": reference_image_bytes},
+            TargetImage={"Bytes": image_bytes},
+            SimilarityThreshold=0,
+        )
+    except ClientError as exc:
+        logger.warning("Rekognition compare_faces failed for %s: %s", candidate_url, exc)
+        return MatchResult(is_match=False, distance=None, is_thumbnail=is_thumb, error="compare_failed")
+
+    matches = response.get("FaceMatches", [])
+    if not matches:
         return MatchResult(is_match=False, distance=None, is_thumbnail=is_thumb, error="no_face_detected")
 
-    distance = _euclidean_l2_distance(reference_vector, candidate_vector)
-    return MatchResult(is_match=distance <= threshold, distance=distance, is_thumbnail=is_thumb)
+    best_similarity = max(m["Similarity"] for m in matches)
+    return MatchResult(is_match=best_similarity >= threshold, distance=best_similarity, is_thumbnail=is_thumb)

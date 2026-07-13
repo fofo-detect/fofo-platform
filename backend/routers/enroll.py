@@ -4,7 +4,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from core.supabase_client import get_supabase
 from models.schemas import EnrollResponse
-from services.face_encoder import FaceNotDetectedError, encode_faces_average
+from services.face_encoder import FaceNotDetectedError, index_faces_for_subscriber
 from services.s3_storage import S3UploadError, upload_enrollment_photo
 
 logger = logging.getLogger(__name__)
@@ -36,11 +36,11 @@ async def enroll(subscriber_id: str = Form(...), files: list[UploadFile] = File(
         images.append(content)
 
     try:
-        face_vector = encode_faces_average(images)
+        face_ids = index_faces_for_subscriber(subscriber_id, images)
     except FaceNotDetectedError as exc:
         raise HTTPException(status_code=422, detail=f"Could not enroll: {exc}") from exc
 
-    update_payload: dict = {"face_vector": face_vector}
+    update_payload: dict = {}
 
     try:
         reference_image_url = upload_enrollment_photo(subscriber_id=subscriber_id, image_bytes=images[0])
@@ -48,10 +48,11 @@ async def enroll(subscriber_id: str = Form(...), files: list[UploadFile] = File(
     except S3UploadError as exc:
         logger.warning("Skipping reference image upload for %s: %s", subscriber_id, exc)
 
-    supabase.table("subscribers").update(update_payload).eq("id", subscriber_id).execute()
+    if update_payload:
+        supabase.table("subscribers").update(update_payload).eq("id", subscriber_id).execute()
 
     return EnrollResponse(
         subscriber_id=subscriber_id,
         message="Face enrolled successfully",
-        vector_dimensions=len(face_vector),
+        faces_indexed=len(face_ids),
     )

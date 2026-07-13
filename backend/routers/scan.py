@@ -62,12 +62,13 @@ def run_scan(subscriber_id: str):
     if not subscriber.data:
         raise HTTPException(status_code=404, detail="Subscriber not found")
 
-    face_vector = subscriber.data.get("face_vector")
     reference_image_url = subscriber.data.get("reference_image_url")
-    if not face_vector:
-        raise HTTPException(status_code=400, detail="Subscriber has not completed face enrollment")
     if not reference_image_url:
-        raise HTTPException(status_code=400, detail="No reference image available to search with")
+        raise HTTPException(status_code=400, detail="Subscriber has not completed face enrollment")
+
+    reference_image_bytes = face_matcher.download_image(reference_image_url)
+    if reference_image_bytes is None:
+        raise HTTPException(status_code=502, detail="Could not fetch subscriber's reference photo")
 
     started_at = _now()
     scan_insert = (
@@ -103,7 +104,7 @@ def run_scan(subscriber_id: str):
             continue
 
         try:
-            match_result = face_matcher.match_candidate(face_vector, candidate_image_url)
+            match_result = face_matcher.match_candidate(reference_image_bytes, candidate_image_url)
             if not match_result.is_match:
                 continue
 

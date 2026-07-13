@@ -55,7 +55,8 @@ def classify_detection(
         "platform": platform,
         "source_url": source_url,
         "image_url": image_url,
-        "face_match_distance": distance_score,
+        # AWS Rekognition CompareFaces similarity, 0-100 (higher = more similar).
+        "face_match_similarity_percent": distance_score,
         "deepfake_probability": deepfake_score,
     }
 

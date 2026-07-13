@@ -59,7 +59,7 @@ class AuthResponse(BaseModel):
 class EnrollResponse(BaseModel):
     subscriber_id: str
     message: str
-    vector_dimensions: int
+    faces_indexed: int
 
 
 # ---------- Subscriber ----------

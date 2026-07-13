@@ -1,6 +1,6 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.5
+pydantic==2.11.7
 pydantic-settings==2.7.1
 email-validator==2.2.0
 python-multipart==0.0.20
@@ -9,12 +9,7 @@ httpx==0.28.1
 supabase==2.31.0
 cryptography==43.0.3
 
-deepface==0.0.93
-opencv-python-headless==4.10.0.84
-tensorflow==2.16.2
-tf-keras==2.16.0
-numpy==1.26.4
-
 anthropic==0.42.0
 stripe==11.4.1
 boto3==1.35.97
+Pillow==11.1.0

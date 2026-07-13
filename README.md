@@ -1,6 +1,6 @@
 # FOFO — Face Identity Protection Platform
 
-Subscribers enroll 3 face photos. FOFO encodes the face (DeepFace ArcFace), runs scheduled
+Subscribers enroll 3 face photos. FOFO indexes the face (AWS Rekognition), runs scheduled
 scans across the internet via SerpAPI Google Lens, scores matches for deepfake probability
 (Sightengine), classifies risk with Claude, and sends WhatsApp alerts (MSG91) for HIGH/CRITICAL
 detections. Billing is handled by Stripe.
@@ -13,7 +13,7 @@ detections. Billing is handled by Stripe.
 | Frontend | Next.js (App Router, TypeScript, Tailwind) |
 | Database / Auth | Supabase (Postgres + Auth) |
 | Face search | SerpAPI Google Lens |
-| Face matching | DeepFace (ArcFace) |
+| Face matching | AWS Rekognition (`index_faces` + `compare_faces`) |
 | Deepfake scoring | Sightengine |
 | Risk classification | Claude API (`claude-sonnet-4-6`) |
 | Alerts | MSG91 WhatsApp API |
@@ -59,10 +59,14 @@ Visit `http://localhost:8000/health` to confirm it's up.
 
 - **SerpAPI** — already set (`SERPAPI_KEY`). Used for Google Lens reverse-image search.
 - **Anthropic** — already set (`ANTHROPIC_API_KEY`). Used for risk classification.
-- **AWS S3** — create a bucket (public-read on the objects FOFO writes) and an IAM user with
-  `s3:PutObject`/`s3:PutObjectAcl` on it. FOFO uploads one enrollment photo per subscriber
-  here so SerpAPI has a public URL to search against. Fill `AWS_ACCESS_KEY_ID`,
-  `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_S3_BUCKET`.
+- **AWS** — one IAM user covers both S3 and Rekognition. Create a bucket (public-read on the
+  objects FOFO writes) — FOFO uploads one enrollment photo per subscriber there so SerpAPI has
+  a public URL to search against, and it also doubles as the Rekognition `CompareFaces` source
+  image. The IAM user's policy needs `s3:PutObject` / `s3:PutObjectAcl` on that bucket, plus
+  `rekognition:CreateCollection`, `rekognition:IndexFaces`, `rekognition:CompareFaces`. Fill
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_S3_BUCKET`,
+  `AWS_REKOGNITION_COLLECTION_ID` (the collection is created automatically on first enrollment
+  if it doesn't exist yet).
 - **Sightengine** — sign up at sightengine.com, create an app, copy the API user/secret into
   `SIGHTENGINE_API_USER` / `SIGHTENGINE_API_SECRET`.
 - **MSG91** — enable WhatsApp on your MSG91 account, create an approved message template,
@@ -80,8 +84,9 @@ that's intentional so a misconfigured deploy never silently serves broken endpoi
 
 1. Push this repo to GitHub.
 2. In Railway: **New Project → Deploy from GitHub repo**, select this repo, and set the
-   **root directory** to `/backend` (Railway will detect the `Dockerfile` and build it —
-   `opencv-python-headless` means no GUI/X11 packages are needed in the image).
+   **root directory** to `/backend` (Railway will detect the `Dockerfile` and build it — the
+   image has no ML runtime in it, just the FastAPI stack + boto3/Pillow, so it builds in well
+   under a minute and needs minimal build memory).
 3. Add every variable from `backend/.env.example` under **Variables**. Set `CORS_ORIGINS` to
    your Vercel frontend URL (e.g. `https://fofo.vercel.app`) and `FRONTEND_URL` to the same,
    so Stripe Checkout redirects land back on your real domain.
@@ -118,27 +123,32 @@ Visit `http://localhost:3000`.
 
 ## User flow
 
-`/` → `/register` (Supabase Auth signup) → `/onboard` (upload 3 photos → `POST /enroll`,
-DeepFace ArcFace encodes and averages them into a 512-dim vector, one photo is mirrored to S3
-as the SerpAPI search seed) → `/subscribe` (Stripe Checkout for ₹50,000/mo or ₹500,000/yr) →
-`/dashboard` (detections table + "Run Scan Now", which calls `POST /scan/{subscriber_id}`).
+`/` → `/register` (Supabase Auth signup) → `/onboard` (upload 3 photos → `POST /enroll`, each
+indexed into an AWS Rekognition collection via `index_faces`, one photo mirrored to S3 as the
+SerpAPI search seed and Rekognition comparison source) → `/subscribe` (Stripe Checkout for
+₹50,000/mo or ₹500,000/yr) → `/dashboard` (detections table + "Run Scan Now", which calls
+`POST /scan/{subscriber_id}`).
 
 ## Scan pipeline (`POST /scan/{subscriber_id}`)
 
-1. Load the subscriber's face vector and reference image URL from Supabase.
+1. Load the subscriber's reference image URL from Supabase and download those bytes once.
 2. Query SerpAPI Google Lens with the reference image, take up to 59 visual matches.
-3. For each candidate: download the image, encode it with DeepFace ArcFace, compute
-   L2-normalized Euclidean distance against the subscriber's vector (threshold 1.5 for
-   thumbnail-sized images, 2.0 for full-size).
+3. For each candidate: download the image, call AWS Rekognition `CompareFaces` against the
+   reference photo bytes (similarity threshold 80% for thumbnail-sized images, 90% for
+   full-size — higher similarity required for the higher-quality images).
 4. For each match: score deepfake probability via Sightengine.
 5. Classify risk (LOW/MEDIUM/HIGH/CRITICAL) and generate an alert message via Claude.
 6. Insert a `detections` row. If risk is HIGH or CRITICAL, send a WhatsApp alert via MSG91.
 7. Mark the `scans` row completed with candidate/match counts.
 
+Note: the `distance_score` column/field name in the DB and API predates the Rekognition switch
+and is kept as-is to avoid a schema migration — it now holds a 0-100 similarity percentage
+(higher = more similar), not a distance.
+
 ## Notes on scale
 
-The scan endpoint runs synchronously (download + DeepFace inference + Sightengine + Claude
-per candidate, up to 59 candidates). This is simple and correct for an initial launch; if scan
+The scan endpoint runs synchronously (download + Rekognition + Sightengine + Claude per
+candidate, up to 59 candidates). This is simple and correct for an initial launch; if scan
 latency becomes a problem under load, move `run_scan` into a background worker (e.g. a Railway
 cron service or a queue) and have the dashboard poll `GET /detections/{subscriber_id}` instead
 of waiting on the POST.

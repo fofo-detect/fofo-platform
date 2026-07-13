@@ -18,11 +18,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     anthropic_model: str = "claude-sonnet-4-6"
 
-    # AWS (image storage for uploaded enrollment photos)
+    # AWS (S3 for enrollment photos, Rekognition for face indexing/matching)
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
     aws_region: str = "us-east-1"
     aws_s3_bucket: str = "fofo-face-uploads"
+    aws_rekognition_collection_id: str = "fofo-faces"
 
     # Sightengine
     sightengine_api_user: str
@@ -42,8 +43,10 @@ class Settings(BaseSettings):
     # App
     cors_origins: str = "http://localhost:3000"
     frontend_url: str = "http://localhost:3000"
-    face_match_distance_threshold_thumbnail: float = 1.5
-    face_match_distance_threshold_full: float = 2.0
+    # AWS Rekognition CompareFaces similarity score is 0-100 (higher = more
+    # similar) — the inverse direction of the old DeepFace Euclidean distance.
+    face_match_similarity_threshold_thumbnail: float = 80.0
+    face_match_similarity_threshold_full: float = 90.0
     max_candidates_per_scan: int = 59
 
     @property

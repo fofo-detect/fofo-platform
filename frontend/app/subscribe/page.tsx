@@ -84,6 +84,15 @@ export default function SubscribePage() {
             </Button>
           </Card>
         </div>
+
+        <div className="mt-10 text-center">
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="text-xs text-neutral-600 underline decoration-dotted hover:text-neutral-400"
+          >
+            Skip payment for now (testing)
+          </button>
+        </div>
       </div>
     </main>
   );

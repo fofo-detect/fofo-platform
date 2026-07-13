@@ -41,7 +41,10 @@ class Settings(BaseSettings):
     stripe_annual_price_id: str
 
     # App
-    cors_origins: str = "http://localhost:3000"
+    # Falls back to the known production Vercel domain if CORS_ORIGINS isn't
+    # set on the deploy platform, so a missing env var doesn't silently take
+    # down every browser request with a CORS block.
+    cors_origins: str = "http://localhost:3000,https://fofo-platform-xi.vercel.app"
     frontend_url: str = "http://localhost:3000"
     # AWS Rekognition CompareFaces similarity score is 0-100 (higher = more
     # similar) — the inverse direction of the old DeepFace Euclidean distance.

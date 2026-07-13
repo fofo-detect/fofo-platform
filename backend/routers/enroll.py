@@ -11,13 +11,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["enroll"])
 
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
-REQUIRED_PHOTO_COUNT = 3
+MIN_PHOTO_COUNT = 3
+MAX_PHOTO_COUNT = 8
 
 
 @router.post("/enroll", response_model=EnrollResponse)
 async def enroll(subscriber_id: str = Form(...), files: list[UploadFile] = File(...)):
-    if len(files) != REQUIRED_PHOTO_COUNT:
-        raise HTTPException(status_code=400, detail=f"Exactly {REQUIRED_PHOTO_COUNT} photos are required")
+    if not (MIN_PHOTO_COUNT <= len(files) <= MAX_PHOTO_COUNT):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Between {MIN_PHOTO_COUNT} and {MAX_PHOTO_COUNT} photos are required",
+        )
 
     supabase = get_supabase()
     existing = (

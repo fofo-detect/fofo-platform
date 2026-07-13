@@ -1,0 +1,56 @@
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Supabase
+    supabase_url: str
+    supabase_secret_key: str
+    supabase_publishable_key: str
+
+    # Face search
+    serpapi_key: str
+
+    # Claude
+    anthropic_api_key: str
+    anthropic_model: str = "claude-sonnet-4-6"
+
+    # AWS (image storage for uploaded enrollment photos)
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = "us-east-1"
+    aws_s3_bucket: str = "fofo-face-uploads"
+
+    # Sightengine
+    sightengine_api_user: str
+    sightengine_api_secret: str
+
+    # MSG91 WhatsApp
+    msg91_auth_key: str
+    msg91_template_id: str
+    msg91_integrated_number: str = ""
+
+    # Stripe
+    stripe_secret_key: str
+    stripe_webhook_secret: str
+    stripe_monthly_price_id: str
+    stripe_annual_price_id: str
+
+    # App
+    cors_origins: str = "http://localhost:3000"
+    frontend_url: str = "http://localhost:3000"
+    face_match_distance_threshold_thumbnail: float = 1.5
+    face_match_distance_threshold_full: float = 2.0
+    max_candidates_per_scan: int = 59
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

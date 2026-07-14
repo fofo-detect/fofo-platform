@@ -10,7 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from core.config import get_settings
 from core.supabase_client import get_supabase
-from models.schemas import RiskLevel, ScanResponse, ScanStatus
+from models.schemas import DEFAULT_ALERT_PREFERENCES, RiskLevel, ScanResponse, ScansListResponse, ScanStatus
 from services import face_matcher, whatsapp
 from services.claude_classifier import ClaudeClassificationError, classify_detection
 from services.face_encoder import normalize_to_jpeg_bytes
@@ -22,7 +22,6 @@ router = APIRouter(tags=["scan"])
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
 SERPAPI_TIMEOUT_SECONDS = 30.0
-ALERTABLE_RISK_LEVELS = {RiskLevel.HIGH, RiskLevel.CRITICAL}
 CANDIDATE_CONCURRENCY = 10
 
 
@@ -214,7 +213,8 @@ def _process_candidate(
             "alert_message": alert_message,
         }
 
-        if risk_level in ALERTABLE_RISK_LEVELS and subscriber_data.get("phone"):
+        alert_preferences = subscriber_data.get("alert_preferences") or DEFAULT_ALERT_PREFERENCES
+        if alert_preferences.get(risk_level.value, False) and subscriber_data.get("phone"):
             try:
                 whatsapp.send_detection_alert(
                     phone=subscriber_data["phone"],
@@ -265,16 +265,24 @@ def _run_scan_background(
             _fail_scan(scan_id)
             return
 
+        # candidates_found doubles as the live "checked so far" counter while the
+        # scan is running (polled by the dashboard) - it converges to len(candidates)
+        # once every future has completed, the same value the old executor.map
+        # version wrote in a single update at the very end.
+        checked = 0
+        matches_found = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=CANDIDATE_CONCURRENCY) as executor:
-            results = list(
-                executor.map(
-                    lambda candidate: _process_candidate(
-                        candidate, subscriber_id, scan_id, reference_image_bytes, subscriber_data
-                    ),
-                    candidates,
+            futures = [
+                executor.submit(
+                    _process_candidate, candidate, subscriber_id, scan_id, reference_image_bytes, subscriber_data
                 )
-            )
-        matches_found = sum(1 for is_new_detection in results if is_new_detection)
+                for candidate in candidates
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                checked += 1
+                if future.result():
+                    matches_found += 1
+                supabase.table("scans").update({"candidates_found": checked}).eq("id", scan_id).execute()
 
         supabase.table("scans").update(
             {
@@ -336,6 +344,41 @@ def run_scan(subscriber_id: str, background_tasks: BackgroundTasks):
         matches_found=0,
         started_at=started_at,
         completed_at=None,
+    )
+
+
+@router.get("/scans/{subscriber_id}", response_model=ScansListResponse)
+def list_scans(subscriber_id: str):
+    supabase = get_supabase()
+
+    subscriber = supabase.table("subscribers").select("id").eq("id", subscriber_id).maybe_single().execute()
+    if not subscriber.data:
+        raise HTTPException(status_code=404, detail="Subscriber not found")
+
+    result = (
+        supabase.table("scans")
+        .select("*")
+        .eq("subscriber_id", subscriber_id)
+        .order("started_at", desc=True)
+        .execute()
+    )
+    rows = result.data or []
+
+    return ScansListResponse(
+        subscriber_id=subscriber_id,
+        total=len(rows),
+        scans=[
+            ScanResponse(
+                scan_id=row["id"],
+                subscriber_id=row["subscriber_id"],
+                status=ScanStatus(row["status"]),
+                candidates_found=row["candidates_found"],
+                matches_found=row["matches_found"],
+                started_at=row["started_at"],
+                completed_at=row.get("completed_at"),
+            )
+            for row in rows
+        ],
     )
 
 

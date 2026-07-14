@@ -8,9 +8,7 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { getErrorMessage, signup } from "@/lib/api";
 import { saveSession } from "@/lib/session";
-
-const PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import { EMAIL_PATTERN, PHONE_HINT, PHONE_PATTERN } from "@/lib/validation";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -26,7 +24,7 @@ export default function RegisterPage() {
       return "Please enter a valid email address";
     }
     if (!PHONE_PATTERN.test(form.phone)) {
-      return "Please include your country code e.g. +91 or +971";
+      return PHONE_HINT;
     }
     if (form.password.length < 8) {
       return "Password must be at least 8 characters";

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.config import get_settings
-from routers import auth, detections, enroll, scan, webhook
+from routers import alerts, auth, detections, enroll, scan, subscribers, webhook
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fofo")
@@ -43,4 +43,6 @@ app.include_router(auth.router)
 app.include_router(enroll.router)
 app.include_router(scan.router)
 app.include_router(detections.router)
+app.include_router(subscribers.router)
+app.include_router(alerts.router)
 app.include_router(webhook.router)

@@ -86,14 +86,36 @@ export interface DetectionsListResponse {
   detections: Detection[];
 }
 
+export type ScanStatus = "pending" | "running" | "completed" | "failed";
+
 export interface ScanResponse {
   scan_id: string;
   subscriber_id: string;
-  status: string;
+  status: ScanStatus;
   candidates_found: number;
   matches_found: number;
   started_at: string;
   completed_at: string | null;
+}
+
+export interface ScansListResponse {
+  subscriber_id: string;
+  total: number;
+  scans: ScanResponse[];
+}
+
+export type AlertPreferences = Record<RiskLevel, boolean>;
+
+export interface Subscriber {
+  id: string;
+  email: string;
+  name: string | null;
+  phone: string | null;
+  reference_image_urls: string[];
+  alert_preferences: AlertPreferences;
+  subscription_status: string | null;
+  plan: string | null;
+  created_at: string | null;
 }
 
 export async function signup(data: {
@@ -156,4 +178,52 @@ export async function createCheckoutSession(
     body: JSON.stringify({ subscriber_id: subscriberId, plan }),
   });
   return handleResponse<{ checkout_url: string }>(res);
+}
+
+export async function listScans(subscriberId: string): Promise<ScansListResponse> {
+  const res = await fetch(`${API_URL}/scans/${subscriberId}`, { cache: "no-store" });
+  return handleResponse<ScansListResponse>(res);
+}
+
+export async function getSubscriber(subscriberId: string): Promise<Subscriber> {
+  const res = await fetch(`${API_URL}/subscribers/${subscriberId}`, { cache: "no-store" });
+  return handleResponse<Subscriber>(res);
+}
+
+export async function updateSubscriber(
+  subscriberId: string,
+  data: { name?: string; phone?: string }
+): Promise<Subscriber> {
+  const res = await fetch(`${API_URL}/subscribers/${subscriberId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<Subscriber>(res);
+}
+
+export async function updateAlertPreferences(
+  subscriberId: string,
+  prefs: Partial<AlertPreferences>
+): Promise<Subscriber> {
+  const res = await fetch(`${API_URL}/subscribers/${subscriberId}/alert-preferences`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(prefs),
+  });
+  return handleResponse<Subscriber>(res);
+}
+
+export async function changePassword(accessToken: string, newPassword: string): Promise<{ message: string }> {
+  const res = await fetch(`${API_URL}/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ access_token: accessToken, new_password: newPassword }),
+  });
+  return handleResponse<{ message: string }>(res);
+}
+
+export async function sendTestAlert(subscriberId: string): Promise<{ message: string }> {
+  const res = await fetch(`${API_URL}/alerts/test/${subscriberId}`, { method: "POST" });
+  return handleResponse<{ message: string }>(res);
 }

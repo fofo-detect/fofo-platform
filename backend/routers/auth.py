@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from supabase_auth.errors import AuthApiError
 
 from core.supabase_client import get_auth_client, get_supabase
-from models.schemas import AuthResponse, LoginRequest, SignupRequest
+from models.schemas import AuthResponse, ChangePasswordRequest, LoginRequest, MessageResponse, SignupRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -77,3 +77,30 @@ def login(payload: LoginRequest):
         user_id=auth_result.user.id,
         email=auth_result.user.email,
     )
+
+
+@router.post("/change-password", response_model=MessageResponse)
+def change_password(payload: ChangePasswordRequest):
+    # Two-step, both on throwaway clients: first prove the caller holds a
+    # currently valid session for *some* user (get_user), then use the
+    # service-role admin API to set that exact user's password. This avoids
+    # needing the refresh_token (the frontend only persists access_token) while
+    # still not letting an arbitrary caller change a stranger's password.
+    auth_client = get_auth_client()
+    try:
+        user_response = auth_client.auth.get_user(payload.access_token)
+    except AuthApiError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired session") from exc
+
+    if user_response is None or user_response.user is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    admin_client = get_auth_client()
+    try:
+        admin_client.auth.admin.update_user_by_id(
+            user_response.user.id, {"password": payload.new_password}
+        )
+    except AuthApiError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return MessageResponse(message="Password updated successfully")

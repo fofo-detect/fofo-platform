@@ -11,11 +11,12 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from core.config import get_settings
 from core.supabase_client import get_supabase
 from models.schemas import DEFAULT_ALERT_PREFERENCES, RiskLevel, ScanResponse, ScansListResponse, ScanStatus
-from services import face_matcher, whatsapp
+from services import face_matcher, whatsapp, youtube_scanner
 from services.claude_classifier import ClaudeClassificationError, classify_detection
 from services.face_encoder import normalize_to_jpeg_bytes
 from services.sightengine import SightengineError, get_deepfake_score
 from services.whatsapp import WhatsAppSendError
+from services.youtube_scanner import YouTubeSearchError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["scan"])
@@ -89,6 +90,36 @@ def _search_all_reference_images(reference_image_urls: list[str], max_results_ea
         raise RuntimeError("All Google Lens searches failed")
 
     return list(merged.values())
+
+
+def _search_youtube(subscriber_name: Optional[str], scan_id: str) -> list[dict]:
+    """Second candidate source alongside Google Lens: search YouTube for videos
+    by the subscriber's name and shape the results into the same candidate dict
+    convention _process_candidate already understands (image/link), tagged with
+    an explicit _platform override so they're recorded as "YouTube" rather than
+    whatever _derive_platform would parse from a youtube.com URL.
+
+    Never fatal to the scan - a missing API key, exhausted quota, or network
+    error here just means the scan proceeds with Google Lens results only.
+    """
+    if not subscriber_name:
+        logger.info("Scan %s: subscriber has no name on file, skipping YouTube search", scan_id)
+        return []
+
+    try:
+        videos = youtube_scanner.search_videos(subscriber_name)
+    except YouTubeSearchError as exc:
+        logger.warning("Scan %s: YouTube search failed, continuing without it: %s", scan_id, exc)
+        return []
+
+    return [
+        {
+            "image": video["thumbnail_url"],
+            "link": video["video_url"],
+            "_platform": "YouTube",
+        }
+        for video in videos
+    ]
 
 
 def _derive_platform(source_url: Optional[str]) -> Optional[str]:
@@ -178,7 +209,7 @@ def _process_candidate(
         if _detection_already_exists(supabase, subscriber_id, candidate_image_url):
             return False
 
-        platform = _derive_platform(source_url or candidate.get("source"))
+        platform = candidate.get("_platform") or _derive_platform(source_url or candidate.get("source"))
 
         deepfake_score: Optional[float] = None
         try:
@@ -264,6 +295,12 @@ def _run_scan_background(
             logger.error("Scan %s failed during SerpAPI search: %s", scan_id, exc)
             _fail_scan(scan_id)
             return
+
+        # Second candidate source: YouTube videos matching the subscriber's name.
+        # Merged into the same candidate pool/thread pool below rather than run
+        # as a separate pass, so dedup, progress tracking, and matches_found all
+        # naturally cover both sources together.
+        candidates = candidates + _search_youtube(subscriber_data.get("name"), scan_id)
 
         # candidates_found doubles as the live "checked so far" counter while the
         # scan is running (polled by the dashboard) - it converges to len(candidates)

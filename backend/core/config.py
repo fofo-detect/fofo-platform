@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # Face search
     serpapi_key: str
 
+    # YouTube Data API v3 (video candidate search). Optional - defaults to ""
+    # so a missing key doesn't break startup; scan.py skips YouTube search
+    # gracefully and logs a warning when this is unset.
+    youtube_api_key: str = ""
+
     # Claude
     anthropic_api_key: str
     anthropic_model: str = "claude-sonnet-4-6"

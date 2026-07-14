@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { DashCard, EmptyState, ErrorBanner, RiskBadge } from "@/components/dashboard/ui";
+import { DashCard, EmptyState, ErrorBanner, PlatformLabel, RiskBadge } from "@/components/dashboard/ui";
 import { Detection, RiskLevel } from "@/lib/api";
 import { useDashboard } from "@/lib/dashboard-context";
 
@@ -185,7 +185,9 @@ function DetectionRow({ detection }: { detection: Detection }) {
         ) : (
           <span className="text-sm font-medium text-dash-sub">No source URL</span>
         )}
-        <p className="mt-0.5 text-xs text-dash-sub">{detection.platform ?? "Unknown platform"}</p>
+        <p className="mt-0.5 text-xs text-dash-sub">
+          <PlatformLabel platform={detection.platform} />
+        </p>
       </div>
 
       <div className="flex items-center gap-6 sm:gap-8">

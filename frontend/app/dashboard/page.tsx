@@ -3,7 +3,15 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { IconChevronRight } from "@/components/dashboard/Icons";
-import { DashButton, DashCard, EmptyState, ErrorBanner, RiskBadge, StatCard } from "@/components/dashboard/ui";
+import {
+  DashButton,
+  DashCard,
+  EmptyState,
+  ErrorBanner,
+  PlatformLabel,
+  RiskBadge,
+  StatCard,
+} from "@/components/dashboard/ui";
 import { ScanResponse, getErrorMessage, getScanStatus, runScan } from "@/lib/api";
 import { useDashboard } from "@/lib/dashboard-context";
 
@@ -161,7 +169,9 @@ export default function OverviewPage() {
                   <div className="h-12 w-12 rounded-lg bg-dash-hover" />
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-dash-ink">{d.platform ?? "Unknown platform"}</p>
+                  <p className="truncate text-sm font-medium text-dash-ink">
+                    <PlatformLabel platform={d.platform} />
+                  </p>
                   <p className="truncate text-xs text-dash-sub">{formatDateTime(d.created_at)}</p>
                 </div>
                 <RiskBadge level={d.risk_level} />

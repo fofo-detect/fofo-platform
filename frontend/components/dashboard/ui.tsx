@@ -2,6 +2,7 @@
 
 import { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, forwardRef } from "react";
 import { RiskLevel, ScanStatus } from "@/lib/api";
+import { IconYouTube } from "./Icons";
 
 export function DashCard({ className = "", children, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
@@ -190,6 +191,19 @@ export function Switch({
       />
     </button>
   );
+}
+
+export function PlatformLabel({ platform }: { platform: string | null }) {
+  if (!platform) return <span className="text-dash-sub">Unknown platform</span>;
+  if (platform === "YouTube") {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <IconYouTube className="h-4 w-4 shrink-0" />
+        YouTube
+      </span>
+    );
+  }
+  return <span>{platform}</span>;
 }
 
 export function ErrorBanner({ message }: { message: string }) {

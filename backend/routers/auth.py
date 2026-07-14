@@ -71,6 +71,24 @@ def login(payload: LoginRequest):
     if auth_result.session is None or auth_result.user is None:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    # account_status may not exist yet (pre-migration 005) - treat that as
+    # active rather than failing every login until the migration is applied.
+    try:
+        subscriber = (
+            get_supabase()
+            .table("subscribers")
+            .select("account_status")
+            .eq("id", auth_result.user.id)
+            .maybe_single()
+            .execute()
+        )
+        if subscriber.data and subscriber.data.get("account_status") == "suspended":
+            raise HTTPException(status_code=403, detail="This account has been suspended")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not check account_status for %s: %s", auth_result.user.id, exc)
+
     return AuthResponse(
         access_token=auth_result.session.access_token,
         refresh_token=auth_result.session.refresh_token,

@@ -7,6 +7,7 @@ from anthropic import Anthropic
 
 from core.config import get_settings
 from models.schemas import ClaudeClassification, RiskLevel
+from services.usage_tracker import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ def classify_detection(
 ) -> ClaudeClassification:
     settings = get_settings()
     client = Anthropic(api_key=settings.anthropic_api_key)
+    log_api_call("anthropic")
 
     detection_payload = {
         "platform": platform,

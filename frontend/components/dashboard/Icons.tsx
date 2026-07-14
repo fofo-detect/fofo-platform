@@ -85,6 +85,24 @@ export function IconChevronRight(props: IconProps) {
   return base(<path d="M9 6l6 6-6 6" />, props);
 }
 
+export function IconUsage(props: IconProps) {
+  return base(
+    <>
+      <path d="M4 20V10" />
+      <path d="M11 20V4" />
+      <path d="M18 20v-7" />
+    </>,
+    props
+  );
+}
+
+export function IconShield(props: IconProps) {
+  return base(
+    <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z" />,
+    props
+  );
+}
+
 export function IconYouTube(props: IconProps) {
   return (
     <svg viewBox="0 0 24 24" {...props}>

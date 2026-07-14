@@ -3,6 +3,7 @@ import logging
 import httpx
 
 from core.config import get_settings
+from services.usage_tracker import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ def search_videos(query: str, max_results: int = MAX_RESULTS) -> list[dict]:
         "maxResults": min(max_results, MAX_RESULTS),
         "key": settings.youtube_api_key,
     }
+    log_api_call("youtube")
     try:
         resp = httpx.get(YOUTUBE_SEARCH_ENDPOINT, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
         resp.raise_for_status()

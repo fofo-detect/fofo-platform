@@ -15,6 +15,7 @@ from services import face_matcher, whatsapp, youtube_scanner
 from services.claude_classifier import ClaudeClassificationError, classify_detection
 from services.face_encoder import normalize_to_jpeg_bytes
 from services.sightengine import SightengineError, get_deepfake_score
+from services.usage_tracker import log_api_call
 from services.whatsapp import WhatsAppSendError
 from services.youtube_scanner import YouTubeSearchError
 
@@ -36,6 +37,7 @@ async def _search_google_lens_async(client: httpx.AsyncClient, image_url: str, m
     of one request at a time."""
     settings = get_settings()
     params = {"engine": "google_lens", "url": image_url, "api_key": settings.serpapi_key}
+    log_api_call("serpapi")
     try:
         resp = await client.get(SERPAPI_ENDPOINT, params=params, timeout=SERPAPI_TIMEOUT_SECONDS)
         resp.raise_for_status()
@@ -132,10 +134,14 @@ def _derive_platform(source_url: Optional[str]) -> Optional[str]:
     return host[4:] if host.startswith("www.") else host or None
 
 
-def _fail_scan(scan_id: str) -> None:
-    get_supabase().table("scans").update(
-        {"status": ScanStatus.FAILED.value, "completed_at": _now()}
-    ).eq("id", scan_id).execute()
+def _fail_scan(scan_id: str, error_message: Optional[str] = None) -> None:
+    update = {"status": ScanStatus.FAILED.value, "completed_at": _now()}
+    try:
+        get_supabase().table("scans").update({**update, "error_message": error_message}).eq(
+            "id", scan_id
+        ).execute()
+    except Exception:  # noqa: BLE001 - error_message column may not exist until migration 005 is applied
+        get_supabase().table("scans").update(update).eq("id", scan_id).execute()
 
 
 def _is_url_already_scanned(supabase, subscriber_id: str, url: str) -> bool:
@@ -285,7 +291,7 @@ def _run_scan_background(
         reference_image_bytes = face_matcher.download_image(reference_image_urls[0])
         if reference_image_bytes is None:
             logger.error("Scan %s failed: could not fetch subscriber's reference photo", scan_id)
-            _fail_scan(scan_id)
+            _fail_scan(scan_id, "Could not download the subscriber's reference photo")
             return
         reference_image_bytes = normalize_to_jpeg_bytes(reference_image_bytes)
 
@@ -293,7 +299,7 @@ def _run_scan_background(
             candidates = _search_all_reference_images(reference_image_urls, settings.max_candidates_per_scan)
         except RuntimeError as exc:
             logger.error("Scan %s failed during SerpAPI search: %s", scan_id, exc)
-            _fail_scan(scan_id)
+            _fail_scan(scan_id, f"Image search failed: {exc}")
             return
 
         # Second candidate source: YouTube videos matching the subscriber's name.
@@ -341,9 +347,9 @@ def _run_scan_background(
                 "completed_at": _now(),
             }
         ).eq("id", scan_id).execute()
-    except Exception:  # noqa: BLE001 - never leave a scan stuck at "running" on an unexpected error
+    except Exception as exc:  # noqa: BLE001 - never leave a scan stuck at "running" on an unexpected error
         logger.exception("Scan %s failed with an unexpected error", scan_id)
-        _fail_scan(scan_id)
+        _fail_scan(scan_id, f"Unexpected error: {exc}")
 
 
 @router.post("/scan/{subscriber_id}", response_model=ScanResponse, status_code=202)
@@ -353,6 +359,9 @@ def run_scan(subscriber_id: str, background_tasks: BackgroundTasks):
     subscriber = supabase.table("subscribers").select("*").eq("id", subscriber_id).maybe_single().execute()
     if not subscriber.data:
         raise HTTPException(status_code=404, detail="Subscriber not found")
+
+    if subscriber.data.get("account_status") == "suspended":
+        raise HTTPException(status_code=403, detail="This account has been suspended")
 
     # reference_image_urls (plural) holds every enrolled angle from the camera
     # capture flow. Older subscribers enrolled before that existed only have the

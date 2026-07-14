@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     face_match_similarity_threshold_full: float = 90.0
     max_candidates_per_scan: int = 59
 
+    # Admin dashboard (/admin). Empty by default so a missing env var fails
+    # closed - verify_admin_password() always returns False when this is "",
+    # rather than accepting a blank password.
+    admin_password: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

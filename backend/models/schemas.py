@@ -172,6 +172,94 @@ class CreateCheckoutResponse(BaseModel):
     checkout_url: str
 
 
+# ---------- Admin ----------
+
+class AdminLoginRequest(BaseModel):
+    password: str
+
+
+class AdminLoginResponse(BaseModel):
+    token: str
+
+
+class UpdateSubscriberStatusRequest(BaseModel):
+    status: str = Field(pattern="^(active|suspended)$")
+
+
+class AdminSubscriberOut(BaseModel):
+    id: str
+    email: EmailStr
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    plan: Optional[str] = None
+    subscription_status: Optional[str] = None
+    account_status: str = "active"
+    created_at: Optional[datetime] = None
+    last_scan_at: Optional[datetime] = None
+    total_detections: int = 0
+
+
+class AdminSubscribersListResponse(BaseModel):
+    total: int
+    subscribers: list[AdminSubscriberOut]
+
+
+class AdminSubscriberDetail(BaseModel):
+    subscriber: AdminSubscriberOut
+    scans: list[ScanResponse]
+    detections: list[DetectionOut]
+
+
+class AdminDetectionOut(DetectionOut):
+    subscriber_name: Optional[str] = None
+    subscriber_email: Optional[str] = None
+
+
+class AdminDetectionsListResponse(BaseModel):
+    total: int
+    detections: list[AdminDetectionOut]
+
+
+class AdminScanOut(ScanResponse):
+    subscriber_name: Optional[str] = None
+    subscriber_email: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class AdminScansListResponse(BaseModel):
+    total: int
+    scans: list[AdminScanOut]
+
+
+class AdminActivityItem(BaseModel):
+    scan_id: str
+    subscriber_name: Optional[str] = None
+    subscriber_email: Optional[str] = None
+    status: ScanStatus
+    candidates_found: int
+    matches_found: int
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class AdminSystemStatus(BaseModel):
+    api_healthy: bool
+    supabase_healthy: bool
+
+
+class AdminOverviewResponse(BaseModel):
+    active_subscribers: int
+    scans_today: int
+    scans_this_week: int
+    scans_this_month: int
+    detections_today: int
+    detections_this_week: int
+    detections_this_month: int
+    critical_high_last_24h: int
+    system_status: AdminSystemStatus
+    recent_activity: list[AdminActivityItem]
+
+
 # ---------- Generic ----------
 
 class ErrorResponse(BaseModel):

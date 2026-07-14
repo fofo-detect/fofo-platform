@@ -3,6 +3,7 @@ import logging
 import httpx
 
 from core.config import get_settings
+from services.usage_tracker import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class SightengineError(Exception):
 def get_deepfake_score(image_url: str) -> float:
     """Return a 0.0-1.0 deepfake probability score for an image URL via Sightengine."""
     settings = get_settings()
+    log_api_call("sightengine")
     params = {
         "url": image_url,
         "models": "deepfake",

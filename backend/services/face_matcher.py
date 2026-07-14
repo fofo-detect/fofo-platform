@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 
 from core.config import get_settings
 from services.face_encoder import normalize_to_jpeg_bytes
+from services.usage_tracker import log_api_call
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ def match_candidate(reference_image_bytes: bytes, candidate_url: str) -> MatchRe
     normalized_image_bytes = normalize_to_jpeg_bytes(image_bytes)
 
     client = _rekognition_client()
+    log_api_call("rekognition")
     try:
         response = client.compare_faces(
             SourceImage={"Bytes": reference_image_bytes},

@@ -282,7 +282,19 @@ def _run_scan_background(
                 checked += 1
                 if future.result():
                     matches_found += 1
-                supabase.table("scans").update({"candidates_found": checked}).eq("id", scan_id).execute()
+                # Throttled (every 3rd candidate) and best-effort: this is a progress
+                # indicator for the dashboard, not correctness-critical, and the final
+                # update below always writes the true count regardless. A transient
+                # Supabase/network blip here must never abort an otherwise-successful
+                # scan - it previously did, because this write was unguarded and ran
+                # on every single candidate (~59 sequential requests per scan).
+                if checked % 3 == 0 or checked == len(candidates):
+                    try:
+                        supabase.table("scans").update({"candidates_found": checked}).eq(
+                            "id", scan_id
+                        ).execute()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Scan %s progress update failed, continuing: %s", scan_id, exc)
 
         supabase.table("scans").update(
             {

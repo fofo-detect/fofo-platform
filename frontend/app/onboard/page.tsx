@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { FaceCapture } from "@/components/FaceCapture";
-import { ApiError, enrollFace } from "@/lib/api";
+import { getErrorMessage, enrollFace } from "@/lib/api";
 import { getSession } from "@/lib/session";
 
 export default function OnboardPage() {
@@ -30,7 +30,7 @@ export default function OnboardPage() {
       await enrollFace(subscriberId, files);
       router.push("/subscribe");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Enrollment failed. Please try again.");
+      setError(getErrorMessage(err, "Enrollment failed. Please try again."));
       setSubmitting(false);
     }
   }

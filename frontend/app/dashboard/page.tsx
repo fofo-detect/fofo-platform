@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { RiskBadge } from "@/components/ui/Badge";
-import { ApiError, Detection, getScanStatus, listDetections, runScan } from "@/lib/api";
+import { Detection, getErrorMessage, getScanStatus, listDetections, runScan } from "@/lib/api";
 import { clearSession, getSession } from "@/lib/session";
 
 const POLL_INTERVAL_MS = 5000;
@@ -27,7 +27,7 @@ export default function DashboardPage() {
       const result = await listDetections(id);
       setDetections(result.detections);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not load detections.");
+      setError(getErrorMessage(err, "Could not load detections."));
     } finally {
       setLoading(false);
     }
@@ -84,11 +84,11 @@ export default function DashboardPage() {
         } catch (err) {
           stopPolling();
           setScanning(false);
-          setError(err instanceof ApiError ? err.message : "Lost track of the scan. Please try again.");
+          setError(getErrorMessage(err, "Lost track of the scan. Please try again."));
         }
       }, POLL_INTERVAL_MS);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not start scan. Please try again.");
+      setError(getErrorMessage(err, "Could not start scan. Please try again."));
       setScanning(false);
     }
   }

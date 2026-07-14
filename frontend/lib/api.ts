@@ -22,6 +22,33 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+const DETAIL_MESSAGE_RULES: Array<{ pattern: RegExp; message: string }> = [
+  { pattern: /already registered|already exists|user already/i, message: "This email is already registered. Please log in instead." },
+  { pattern: /password.*(least|character|short)/i, message: "Password must be at least 8 characters" },
+  { pattern: /invalid login credentials|invalid email or password/i, message: "Incorrect email or password" },
+  { pattern: /unable to validate email|invalid.*email|email.*invalid/i, message: "Please enter a valid email address" },
+  { pattern: /rate limit|too many/i, message: "Too many attempts. Please wait a moment and try again." },
+];
+
+// Fetch rejects with a plain TypeError (not an ApiError, since no response was ever
+// received) for both CORS blocks and genuine offline/network failures — there's no
+// way to tell those apart from the browser API, so both map to a connection message.
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError;
+}
+
+export function getErrorMessage(err: unknown, fallback: string): string {
+  if (isNetworkError(err)) {
+    return "Connection error. Please check your internet and try again.";
+  }
+  if (err instanceof ApiError) {
+    const rule = DETAIL_MESSAGE_RULES.find(({ pattern }) => pattern.test(err.message));
+    if (rule) return rule.message;
+    return err.message || fallback;
+  }
+  return fallback;
+}
+
 export interface AuthResponse {
   access_token: string | null;
   refresh_token: string | null;

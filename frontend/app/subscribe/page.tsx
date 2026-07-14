@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { ApiError, createCheckoutSession } from "@/lib/api";
+import { createCheckoutSession, getErrorMessage } from "@/lib/api";
 import { getSession } from "@/lib/session";
 
 type Plan = "monthly" | "annual";
@@ -32,7 +32,7 @@ export default function SubscribePage() {
       const { checkout_url } = await createCheckoutSession(subscriberId, plan);
       window.location.href = checkout_url;
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not start checkout. Please try again.");
+      setError(getErrorMessage(err, "Could not start checkout. Please try again."));
       setLoadingPlan(null);
     }
   }

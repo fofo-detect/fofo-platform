@@ -6,7 +6,7 @@ import { FormEvent, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import { ApiError, login } from "@/lib/api";
+import { getErrorMessage, login } from "@/lib/api";
 import { saveSession } from "@/lib/session";
 
 export default function LoginPage() {
@@ -18,6 +18,10 @@ export default function LoginPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    if (!form.email || !form.password) {
+      setError("Please fill in all fields");
+      return;
+    }
     setLoading(true);
     try {
       const result = await login(form);
@@ -28,7 +32,7 @@ export default function LoginPage() {
       });
       router.push("/dashboard");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
+      setError(getErrorMessage(err, "Something went wrong. Please try again."));
     } finally {
       setLoading(false);
     }

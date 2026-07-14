@@ -6,8 +6,11 @@ import { FormEvent, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import { ApiError, signup } from "@/lib/api";
+import { getErrorMessage, signup } from "@/lib/api";
 import { saveSession } from "@/lib/session";
+
+const PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -15,9 +18,30 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  function validate(): string | null {
+    if (!form.name || !form.email || !form.phone || !form.password) {
+      return "Please fill in all fields";
+    }
+    if (!EMAIL_PATTERN.test(form.email)) {
+      return "Please enter a valid email address";
+    }
+    if (!PHONE_PATTERN.test(form.phone)) {
+      return "Please include your country code e.g. +91 or +971";
+    }
+    if (form.password.length < 8) {
+      return "Password must be at least 8 characters";
+    }
+    return null;
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     setLoading(true);
     try {
       const result = await signup(form);
@@ -29,7 +53,7 @@ export default function RegisterPage() {
       });
       router.push("/onboard");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
+      setError(getErrorMessage(err, "Something went wrong. Please try again."));
     } finally {
       setLoading(false);
     }

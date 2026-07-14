@@ -46,8 +46,13 @@ class Settings(BaseSettings):
     # down every browser request with a CORS block.
     cors_origins: str = (
         "http://localhost:3000,https://fofo-platform-xi.vercel.app,"
-        "https://fofo-platform-mwkszyfxx-fofo-platform.vercel.app"
+        "https://fofo-platform-mwkszyfxx-fofo-platform.vercel.app,"
+        "https://fofo-platform-pi.vercel.app"
     )
+    # Vercel mints a new, unpredictable preview URL per branch/deploy, so an
+    # explicit allowlist alone constantly falls behind. Scope the regex to our
+    # own project's subdomains rather than every *.vercel.app tenant.
+    cors_origin_regex: str = r"^https://fofo-platform(-[a-z0-9]+)*\.vercel\.app$"
     frontend_url: str = "http://localhost:3000"
     # AWS Rekognition CompareFaces similarity score is 0-100 (higher = more
     # similar) — the inverse direction of the old DeepFace Euclidean distance.

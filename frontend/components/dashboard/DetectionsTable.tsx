@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { DashCard, EmptyState, ErrorBanner, PlatformLabel, RiskBadge } from "@/components/dashboard/ui";
+import { DashCard, EmptyState, PlatformLabel, RiskBadge } from "@/components/dashboard/ui";
 import { Detection, RiskLevel } from "@/lib/api";
-import { useDashboard } from "@/lib/dashboard-context";
+import { formatDate, formatScore, sourceHost } from "@/lib/format";
 
 const RISK_FILTERS: Array<{ label: string; value: RiskLevel | "ALL" }> = [
   { label: "All", value: "ALL" },
@@ -24,35 +24,16 @@ type SortValue = (typeof SORT_OPTIONS)[number]["value"];
 const RISK_ORDER: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
 const PAGE_SIZE = 20;
 
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
-}
-
-function formatScore(score: number | null): string {
-  if (score === null || score === undefined) return "—";
-  return `${Math.round(score * 100)}%`;
-}
-
-function sourceHost(url: string | null): string {
-  if (!url) return "—";
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
-
-export default function DetectionsPage() {
-  const { detections, loading, error, markDetectionsViewed } = useDashboard();
+export function DetectionsTable({
+  detections,
+  loading = false,
+}: {
+  detections: Detection[];
+  loading?: boolean;
+}) {
   const [riskFilter, setRiskFilter] = useState<RiskLevel | "ALL">("ALL");
   const [sort, setSort] = useState<SortValue>("newest");
   const [page, setPage] = useState(1);
-
-  useEffect(() => {
-    markDetectionsViewed();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     setPage(1);
@@ -75,13 +56,6 @@ export default function DetectionsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-dash-ink">Detections</h1>
-        <p className="mt-1 text-sm text-dash-sub">Every match found across your scans.</p>
-      </div>
-
-      {error && <ErrorBanner message={error} />}
-
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap gap-2">
           {RISK_FILTERS.map(({ label, value }) => (
@@ -188,6 +162,11 @@ function DetectionRow({ detection }: { detection: Detection }) {
         <p className="mt-0.5 text-xs text-dash-sub">
           <PlatformLabel platform={detection.platform} />
         </p>
+        {detection.alert_message && (
+          <p className="mt-1 max-w-xl truncate text-xs italic text-dash-sub" title={detection.alert_message}>
+            "{detection.alert_message}"
+          </p>
+        )}
       </div>
 
       <div className="flex items-center gap-6 sm:gap-8">

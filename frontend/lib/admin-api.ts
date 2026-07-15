@@ -51,6 +51,17 @@ export interface AdminOverview {
   critical_high_last_24h: number;
   system_status: { api_healthy: boolean; supabase_healthy: boolean };
   recent_activity: AdminActivityItem[];
+  mrr: number;
+  monthly_subscriber_count: number;
+  annual_subscriber_count: number;
+  scans_today_completed: number;
+  scans_today_failed: number;
+  revenue_this_month: number;
+  revenue_last_month: number;
+  revenue_change_percent: number | null;
+  cost_this_month_usd: number;
+  gross_profit_this_month_inr: number;
+  churn_this_month: number;
 }
 
 export async function getAdminOverview(token: string): Promise<AdminOverview> {
@@ -71,6 +82,9 @@ export interface AdminSubscriber {
   created_at: string | null;
   last_scan_at: string | null;
   total_detections: number;
+  mrr_value: number;
+  next_payment_due: string | null;
+  suspended_at: string | null;
 }
 
 export interface AdminSubscribersList {
@@ -154,7 +168,7 @@ export interface AdminScansList {
 
 export async function listAdminScans(
   token: string,
-  filters: { status?: ScanStatus; subscriber_id?: string } = {}
+  filters: { status?: ScanStatus; subscriber_id?: string; date_from?: string; date_to?: string } = {}
 ): Promise<AdminScansList> {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
@@ -179,14 +193,47 @@ export interface ApiUsage {
     plan_searches_left: number | null;
     this_month_usage?: number;
     total_searches_left?: number;
+    days_until_exhausted: number | null;
   };
   youtube: ProviderUsage;
-  rekognition: ProviderUsage;
-  sightengine: ProviderUsage;
+  rekognition: ProviderUsage & { estimated_cost_usd_this_month: number };
+  sightengine: ProviderUsage & { estimated_cost_usd_this_month: number };
   anthropic: ProviderUsage & { estimated_cost_usd_this_month: number; cost_note: string };
+  total_estimated_cost_usd_this_month: number;
+  cost_per_subscriber_this_month_usd: number | null;
+  cost_scope_note: string;
 }
 
 export async function getAdminApiUsage(token: string): Promise<ApiUsage> {
   const res = await fetch(`${API_URL}/admin/api-usage`, { headers: authHeaders(token), cache: "no-store" });
   return handleResponse<ApiUsage>(res);
+}
+
+export interface AdminSubscriberPaymentRow {
+  id: string;
+  name: string | null;
+  email: string;
+  plan: string | null;
+  mrr_value: number;
+  created_at: string | null;
+  next_payment_due: string | null;
+}
+
+export interface AdminRevenue {
+  mrr: number;
+  arr: number;
+  monthly_plan_revenue: number;
+  annual_plan_revenue: number;
+  cost_breakdown_usd: Record<string, number>;
+  total_cost_this_month_usd: number;
+  total_cost_this_month_inr: number;
+  gross_margin_inr: number;
+  break_even_subscribers: number | null;
+  fx_note: string;
+  subscribers: AdminSubscriberPaymentRow[];
+}
+
+export async function getAdminRevenue(token: string): Promise<AdminRevenue> {
+  const res = await fetch(`${API_URL}/admin/revenue`, { headers: authHeaders(token), cache: "no-store" });
+  return handleResponse<AdminRevenue>(res);
 }

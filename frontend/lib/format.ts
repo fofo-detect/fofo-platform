@@ -32,6 +32,18 @@ export function sourceHost(url: string | null): string {
   }
 }
 
+export function formatINR(value: number): string {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(
+    value
+  );
+}
+
+export function formatUSD(value: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(
+    value
+  );
+}
+
 export function formatDuration(startIso: string | null, endIso: string | null): string {
   if (!startIso || !endIso) return "—";
   const seconds = Math.max(0, Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 1000));

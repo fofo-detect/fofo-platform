@@ -103,6 +103,26 @@ export function IconShield(props: IconProps) {
   );
 }
 
+export function IconTrendingUp(props: IconProps) {
+  return base(
+    <>
+      <path d="M3 17l6-6 4 4 8-8" />
+      <path d="M15 7h6v6" />
+    </>,
+    props
+  );
+}
+
+export function IconSettings(props: IconProps) {
+  return base(
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" />
+    </>,
+    props
+  );
+}
+
 export function IconYouTube(props: IconProps) {
   return (
     <svg viewBox="0 0 24 24" {...props}>

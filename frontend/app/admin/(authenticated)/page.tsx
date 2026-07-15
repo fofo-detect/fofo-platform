@@ -5,14 +5,15 @@ import { DashCard, ErrorBanner, ScanStatusBadge, StatCard } from "@/components/d
 import { AdminOverview, getAdminOverview } from "@/lib/admin-api";
 import { useAdminAuth } from "@/lib/admin-context";
 import { getErrorMessage } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatINR, formatUSD } from "@/lib/format";
 
-function MiniStat({ label, value }: { label: string; value: number }) {
+function TrendArrow({ percent }: { percent: number | null }) {
+  if (percent === null) return <span className="text-xs text-dash-sub">No prior data</span>;
+  const up = percent >= 0;
   return (
-    <div className="flex flex-col items-center gap-1 rounded-lg bg-dash-hover px-3 py-3">
-      <span className="text-lg font-semibold text-dash-ink">{value}</span>
-      <span className="text-xs text-dash-sub">{label}</span>
-    </div>
+    <span className={`text-xs font-semibold ${up ? "text-emerald-700" : "text-brand-red"}`}>
+      {up ? "▲" : "▼"} {Math.abs(percent)}% vs last month
+    </span>
   );
 }
 
@@ -45,8 +46,10 @@ export default function AdminOverviewPage() {
   return (
     <div className="flex flex-col gap-8">
       <div>
-        <h1 className="text-2xl font-semibold text-dash-ink">Admin Overview</h1>
-        <p className="mt-1 text-sm text-dash-sub">System-wide status across every FOFO subscriber.</p>
+        <h1 className="text-2xl font-semibold text-dash-ink">Business Overview</h1>
+        <p className="mt-1 text-sm text-dash-sub">
+          Revenue, subscriber health, and operations across every FOFO account.
+        </p>
       </div>
 
       {error && <ErrorBanner message={error} />}
@@ -56,40 +59,50 @@ export default function AdminOverviewPage() {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <StatCard label="Active Subscribers" value={data.active_subscribers} />
+            <StatCard label="MRR" value={formatINR(data.mrr)} caption="Monthly recurring revenue" />
             <StatCard
-              label="Critical/High (24h)"
+              label="Active Subscribers"
+              value={data.active_subscribers}
+              caption={`${data.monthly_subscriber_count} monthly · ${data.annual_subscriber_count} annual`}
+            />
+            <StatCard
+              label="Scans Today"
+              value={data.scans_today}
+              caption={`${data.scans_today_completed} succeeded · ${data.scans_today_failed} failed`}
+            />
+            <StatCard
+              label="Critical Alerts (24h)"
               value={data.critical_high_last_24h}
               accent={data.critical_high_last_24h > 0}
             />
-            <StatCard
-              label="API"
-              value={data.system_status.api_healthy ? "Healthy" : "Down"}
-              accent={!data.system_status.api_healthy}
-            />
-            <StatCard
-              label="Database"
-              value={data.system_status.supabase_healthy ? "Healthy" : "Down"}
-              accent={!data.system_status.supabase_healthy}
-            />
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-3">
             <DashCard className="p-6">
-              <h2 className="text-sm font-semibold text-dash-ink">Scans run</h2>
-              <div className="mt-4 grid grid-cols-3 gap-3">
-                <MiniStat label="Today" value={data.scans_today} />
-                <MiniStat label="This week" value={data.scans_this_week} />
-                <MiniStat label="This month" value={data.scans_this_month} />
+              <p className="text-xs font-medium uppercase tracking-wide text-dash-sub">Revenue this month</p>
+              <p className="mt-3 text-2xl font-semibold text-dash-ink">{formatINR(data.revenue_this_month)}</p>
+              <p className="mt-1 text-xs text-dash-sub">Last month: {formatINR(data.revenue_last_month)}</p>
+              <div className="mt-2">
+                <TrendArrow percent={data.revenue_change_percent} />
               </div>
             </DashCard>
+
             <DashCard className="p-6">
-              <h2 className="text-sm font-semibold text-dash-ink">Detections found</h2>
-              <div className="mt-4 grid grid-cols-3 gap-3">
-                <MiniStat label="Today" value={data.detections_today} />
-                <MiniStat label="This week" value={data.detections_this_week} />
-                <MiniStat label="This month" value={data.detections_this_month} />
-              </div>
+              <p className="text-xs font-medium uppercase tracking-wide text-dash-sub">Cost vs Revenue</p>
+              <p className="mt-3 text-2xl font-semibold text-dash-ink">
+                {formatINR(data.gross_profit_this_month_inr)}
+              </p>
+              <p className="mt-1 text-xs text-dash-sub">
+                Gross profit — API cost this month: {formatUSD(data.cost_this_month_usd)}
+              </p>
+            </DashCard>
+
+            <DashCard className="p-6">
+              <p className="text-xs font-medium uppercase tracking-wide text-dash-sub">Churn this month</p>
+              <p className={`mt-3 text-2xl font-semibold ${data.churn_this_month > 0 ? "text-brand-red" : "text-dash-ink"}`}>
+                {data.churn_this_month}
+              </p>
+              <p className="mt-1 text-xs text-dash-sub">Subscribers suspended this month</p>
             </DashCard>
           </div>
 

@@ -197,6 +197,11 @@ class AdminSubscriberOut(BaseModel):
     created_at: Optional[datetime] = None
     last_scan_at: Optional[datetime] = None
     total_detections: int = 0
+    # Business-intelligence fields, computed (not billed - Stripe isn't live
+    # yet) from the assigned plan and join date. See services/business_metrics.py.
+    mrr_value: int = 0
+    next_payment_due: Optional[datetime] = None
+    suspended_at: Optional[datetime] = None
 
 
 class AdminSubscribersListResponse(BaseModel):
@@ -258,6 +263,43 @@ class AdminOverviewResponse(BaseModel):
     critical_high_last_24h: int
     system_status: AdminSystemStatus
     recent_activity: list[AdminActivityItem]
+    # Business intelligence - all computed from assigned plan + join/suspend
+    # dates, not real Stripe billing events (Stripe isn't live yet).
+    mrr: float = 0
+    monthly_subscriber_count: int = 0
+    annual_subscriber_count: int = 0
+    scans_today_completed: int = 0
+    scans_today_failed: int = 0
+    revenue_this_month: float = 0
+    revenue_last_month: float = 0
+    revenue_change_percent: Optional[float] = None
+    cost_this_month_usd: float = 0
+    gross_profit_this_month_inr: float = 0
+    churn_this_month: int = 0
+
+
+class AdminSubscriberPaymentRow(BaseModel):
+    id: str
+    name: Optional[str] = None
+    email: EmailStr
+    plan: Optional[str] = None
+    mrr_value: int
+    created_at: Optional[datetime] = None
+    next_payment_due: Optional[datetime] = None
+
+
+class AdminRevenueResponse(BaseModel):
+    mrr: float
+    arr: float
+    monthly_plan_revenue: float
+    annual_plan_revenue: float
+    cost_breakdown_usd: dict[str, float]
+    total_cost_this_month_usd: float
+    total_cost_this_month_inr: float
+    gross_margin_inr: float
+    break_even_subscribers: Optional[int]
+    fx_note: str
+    subscribers: list[AdminSubscriberPaymentRow]
 
 
 # ---------- Generic ----------

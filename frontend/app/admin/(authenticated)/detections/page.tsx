@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { DashCard, EmptyState, ErrorBanner, PlatformLabel, RiskBadge } from "@/components/dashboard/ui";
+import { DashCard, EmptyState, ErrorBanner, PlatformLabel, RiskBadge, StatCard } from "@/components/dashboard/ui";
 import { getErrorMessage } from "@/lib/api";
 import { RiskLevel } from "@/lib/api";
 import { AdminDetection, AdminSubscriber, listAdminDetections, listAdminSubscribers } from "@/lib/admin-api";
@@ -25,7 +25,38 @@ const SORT_OPTIONS = [
 
 type SortValue = (typeof SORT_OPTIONS)[number]["value"];
 const RISK_ORDER: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+const RISK_BAR_COLOR: Record<string, string> = {
+  CRITICAL: "bg-brand-red",
+  HIGH: "bg-orange-500",
+  MEDIUM: "bg-amber-500",
+  LOW: "bg-neutral-400",
+};
 const PAGE_SIZE = 25;
+
+function Breakdown({ title, rows }: { title: string; rows: Array<{ label: string; count: number; color?: string }> }) {
+  const total = rows.reduce((sum, r) => sum + r.count, 0) || 1;
+  return (
+    <DashCard className="p-6">
+      <h2 className="text-sm font-semibold text-dash-ink">{title}</h2>
+      <div className="mt-4 flex flex-col gap-3">
+        {rows.map((row) => (
+          <div key={row.label} className="flex flex-col gap-1">
+            <div className="flex items-center justify-between text-xs text-dash-sub">
+              <span className="capitalize">{row.label}</span>
+              <span className="font-medium text-dash-ink">{row.count}</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-dash-hover">
+              <div
+                className={`h-full rounded-full ${row.color || "bg-brand-red"}`}
+                style={{ width: `${(row.count / total) * 100}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </DashCard>
+  );
+}
 
 export default function AdminDetectionsPage() {
   const { token, handleAuthError } = useAdminAuth();
@@ -91,6 +122,30 @@ export default function AdminDetectionsPage() {
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
+  const riskBreakdown = useMemo(() => {
+    const counts: Record<string, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+    detections.forEach((d) => {
+      if (d.risk_level) counts[d.risk_level] = (counts[d.risk_level] || 0) + 1;
+    });
+    return (["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map((level) => ({
+      label: level,
+      count: counts[level],
+      color: RISK_BAR_COLOR[level],
+    }));
+  }, [detections]);
+
+  const platformBreakdown = useMemo(() => {
+    const counts: Record<string, number> = {};
+    detections.forEach((d) => {
+      const key = d.platform || "Unknown";
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([label, count]) => ({ label, count }));
+  }, [detections]);
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -99,6 +154,13 @@ export default function AdminDetectionsPage() {
       </div>
 
       {error && <ErrorBanner message={error} />}
+
+      <StatCard label="Total Detections" value={detections.length} />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Breakdown title="By risk level" rows={riskBreakdown} />
+        <Breakdown title="By platform" rows={platformBreakdown} />
+      </div>
 
       <DashCard className="flex flex-col gap-4 p-4">
         <div className="flex flex-wrap gap-2">

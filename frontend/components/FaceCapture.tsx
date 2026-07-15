@@ -19,7 +19,7 @@ const FOREHEAD = 10;
 const CHIN = 152;
 
 type CameraState =
-  | "idle"
+  | "prompt"
   | "unsupported"
   | "requesting"
   | "denied"
@@ -43,10 +43,24 @@ export function FaceCapture({ onComplete, submitting }: FaceCaptureProps) {
   const bucketStreakRef = useRef<{ index: number; count: number }>({ index: -1, count: 0 });
   const completedRef = useRef(false);
 
-  const [cameraState, setCameraState] = useState<CameraState>("idle");
+  // Camera access is only ever requested after the user explicitly opts in
+  // via the permission-prompt screen below - getUserMedia() is what actually
+  // triggers the browser's native permission popup, so starting it
+  // automatically on mount (the old behavior) meant that popup appeared with
+  // no explanation, which is exactly what reads as "confusing" on mobile.
+  const [started, setStarted] = useState(false);
+  const [cameraState, setCameraState] = useState<CameraState>("prompt");
   const [capturedMask, setCapturedMask] = useState<boolean[]>(new Array(NUM_ANGLES).fill(false));
   const [allCaptured, setAllCaptured] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
+
+  // Capability check only - never prompts for permission, so it is safe to
+  // run before the user has opted in.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setCameraState("unsupported");
+    }
+  }, []);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -87,7 +101,10 @@ export function FaceCapture({ onComplete, submitting }: FaceCaptureProps) {
           }
         },
         "image/jpeg",
-        0.9
+        // 0.6 instead of 0.9 - roughly halves each frame's size, which
+        // matters most on a slow mobile upload where 8 angles otherwise add
+        // up to a payload that can time out before it finishes sending.
+        0.6
       );
     },
     [onComplete, stopCamera]
@@ -95,6 +112,7 @@ export function FaceCapture({ onComplete, submitting }: FaceCaptureProps) {
 
   // ---- camera + model setup ----
   useEffect(() => {
+    if (!started) return;
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       setCameraState("unsupported");
       return;
@@ -173,7 +191,7 @@ export function FaceCapture({ onComplete, submitting }: FaceCaptureProps) {
       landmarkerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [retryKey]);
+  }, [retryKey, started]);
 
   // ---- detection loop ----
   useEffect(() => {
@@ -247,6 +265,41 @@ export function FaceCapture({ onComplete, submitting }: FaceCaptureProps) {
   const capturedCount = capturedMask.filter(Boolean).length;
   const processing = allCaptured || submitting;
 
+  // The liveness circle only ever renders below this point - before the user
+  // has opted in (or on a browser that cannot support it at all), they see
+  // this screen instead, never the camera frame.
+  if (cameraState === "prompt" || cameraState === "unsupported") {
+    return (
+      <div className="flex flex-col items-center gap-5 px-6 text-center">
+        <div className="flex h-20 w-20 items-center justify-center rounded-full border-2 border-brand-red bg-neutral-900">
+          <CameraIcon className="h-9 w-9 text-brand-red" />
+        </div>
+
+        {cameraState === "prompt" ? (
+          <>
+            <div className="max-w-sm">
+              <p className="text-lg font-medium text-white">FOFO needs camera access to enroll your face</p>
+              <p className="mt-2 text-sm text-neutral-400">
+                We capture a few angles of your face to build your protection profile. Nothing is shared
+                publicly, and the camera turns off as soon as enrollment finishes.
+              </p>
+            </div>
+            <button
+              onClick={() => setStarted(true)}
+              className="rounded-md bg-brand-red px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-brand-red-bright"
+            >
+              Enable Camera
+            </button>
+          </>
+        ) : (
+          <p className="max-w-sm text-sm text-red-400">
+            Your browser doesn&apos;t support camera access. Please try Chrome, Safari, or Edge.
+          </p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col items-center">
       <div className="relative h-[280px] w-[280px] sm:h-[340px] sm:w-[340px]">
@@ -293,7 +346,6 @@ export function FaceCapture({ onComplete, submitting }: FaceCaptureProps) {
               {cameraState === "loading-model" && (
                 <p className="text-sm text-neutral-400">Loading face detection…</p>
               )}
-              {cameraState === "idle" && <p className="text-sm text-neutral-400">Starting…</p>}
             </div>
           )}
 
@@ -308,20 +360,37 @@ export function FaceCapture({ onComplete, submitting }: FaceCaptureProps) {
       <canvas ref={canvasRef} className="hidden" />
 
       <div className="mt-8 text-center">
-        {cameraState === "unsupported" && (
-          <p className="max-w-sm text-sm text-red-400">
-            Your browser doesn&apos;t support camera access. Please try Chrome, Safari, or Edge.
-          </p>
-        )}
-
         {cameraState === "denied" && (
-          <div className="max-w-sm space-y-2">
-            <p className="text-sm font-medium text-red-400">Camera access is blocked</p>
-            <p className="text-sm text-neutral-400">
-              FOFO needs your camera to verify your face. Click the camera icon in your browser&apos;s
-              address bar (or open Settings → Privacy → Camera) to allow access, then try again.
-            </p>
-            <Retry onRetry={() => setRetryKey((k) => k + 1)} />
+          <div className="max-w-sm space-y-4 text-left">
+            <div className="text-center">
+              <p className="text-sm font-medium text-red-400">Camera access is blocked</p>
+              <p className="mt-1 text-sm text-neutral-400">
+                FOFO needs your camera to verify your face. Enable it in your browser settings below, then
+                try again.
+              </p>
+            </div>
+
+            <div className="rounded-md border border-neutral-800 bg-neutral-900/60 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Chrome</p>
+              <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-xs text-neutral-400">
+                <li>Tap the lock or camera icon at the left of the address bar</li>
+                <li>Tap &quot;Permissions&quot; (or &quot;Site settings&quot;) and set Camera to &quot;Allow&quot;</li>
+                <li>Reload this page</li>
+              </ol>
+            </div>
+
+            <div className="rounded-md border border-neutral-800 bg-neutral-900/60 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Safari</p>
+              <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-xs text-neutral-400">
+                <li>iPhone/iPad: open the Settings app → Safari → Camera → Allow</li>
+                <li>Mac: Safari menu → Settings → Websites → Camera → allow this site</li>
+                <li>Reload this page</li>
+              </ol>
+            </div>
+
+            <div className="flex justify-center">
+              <Retry onRetry={() => setRetryKey((k) => k + 1)} />
+            </div>
           </div>
         )}
 
@@ -369,5 +438,22 @@ function Retry({ onRetry }: { onRetry: () => void }) {
     >
       Try Again
     </button>
+  );
+}
+
+function CameraIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="M3 8.5a2 2 0 0 1 2-2h2l1.2-1.8A2 2 0 0 1 9.9 4h4.2a2 2 0 0 1 1.7.9L17 6.5h2a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8.5Z" />
+      <circle cx="12" cy="13" r="3.5" />
+    </svg>
   );
 }

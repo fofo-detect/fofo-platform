@@ -1,3 +1,4 @@
+import concurrent.futures
 import logging
 from io import BytesIO
 
@@ -49,15 +50,23 @@ def _ensure_collection_exists(client, collection_id: str) -> None:
         pass
 
 
-def index_face_bytes(subscriber_id: str, image_bytes: bytes) -> str:
+def index_face_bytes(subscriber_id: str, image_bytes: bytes, *, ensure_collection: bool = True) -> str:
     """Index one enrollment photo into the shared Rekognition collection.
 
     ExternalImageId is set to subscriber_id so matches can be attributed back
     to a subscriber. Returns the resulting FaceId.
+
+    ensure_collection=False skips the create_collection check - used by the
+    batch path below, which already checked once for the whole batch instead
+    of once per image (this used to run on every single enrollment photo,
+    adding a redundant AWS round trip - always a guaranteed-to-fail
+    "already exists" call after the very first enrollment ever - to each of
+    up to 8 sequential requests).
     """
     settings = get_settings()
     client = _client()
-    _ensure_collection_exists(client, settings.aws_rekognition_collection_id)
+    if ensure_collection:
+        _ensure_collection_exists(client, settings.aws_rekognition_collection_id)
     image_bytes = normalize_to_jpeg_bytes(image_bytes)
 
     try:
@@ -81,17 +90,36 @@ def index_face_bytes(subscriber_id: str, image_bytes: bytes) -> str:
 
 
 def index_faces_for_subscriber(subscriber_id: str, images: list[bytes]) -> list[str]:
-    """Index all enrollment photos for a subscriber, return the FaceIds that succeeded."""
+    """Index all enrollment photos for a subscriber concurrently (thread pool,
+    same pattern as scan.py's candidate processing - boto3 is synchronous, so
+    this is genuine thread-level parallelism), returning the FaceIds that
+    succeeded.
+
+    This used to index one photo at a time, sequentially, inside a single
+    request - up to 8 photos x a redundant collection check each meant as
+    many as 16 sequential AWS round trips before a mobile client ever got a
+    response, which was slow enough on a mobile upload to risk the
+    connection dropping before the request finished.
+    """
     if not images:
         raise ValueError("At least one image is required")
 
-    face_ids = []
-    errors = []
-    for idx, image_bytes in enumerate(images):
-        try:
-            face_ids.append(index_face_bytes(subscriber_id, image_bytes))
-        except FaceNotDetectedError as exc:
-            errors.append(f"image {idx + 1}: {exc}")
+    settings = get_settings()
+    _ensure_collection_exists(_client(), settings.aws_rekognition_collection_id)
+
+    face_ids: list[str] = []
+    errors: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(images)) as executor:
+        futures = {
+            executor.submit(index_face_bytes, subscriber_id, image_bytes, ensure_collection=False): idx
+            for idx, image_bytes in enumerate(images)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            idx = futures[future]
+            try:
+                face_ids.append(future.result())
+            except FaceNotDetectedError as exc:
+                errors.append(f"image {idx + 1}: {exc}")
 
     if not face_ids:
         raise FaceNotDetectedError(f"No face detected in any enrollment photo ({'; '.join(errors)})")

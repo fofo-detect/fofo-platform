@@ -1,3 +1,4 @@
+import concurrent.futures
 import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -46,15 +47,23 @@ async def enroll(subscriber_id: str = Form(...), files: list[UploadFile] = File(
 
     # Every enrolled photo is uploaded, not just one - the scan endpoint runs a
     # separate Google Lens search per reference image, so more enrolled angles
-    # means more search seeds and a wider net of candidates per scan.
-    reference_image_urls: list[str] = []
-    for image_bytes in images:
-        try:
-            reference_image_urls.append(
-                upload_enrollment_photo(subscriber_id=subscriber_id, image_bytes=image_bytes)
-            )
-        except S3UploadError as exc:
-            logger.warning("Skipping one reference image upload for %s: %s", subscriber_id, exc)
+    # means more search seeds and a wider net of candidates per scan. Uploaded
+    # concurrently (was a sequential loop) so up to 8 S3 uploads take roughly
+    # the time of one instead of stacking up inside the same request a mobile
+    # client is waiting on.
+    upload_results: list[str | None] = [None] * len(images)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(images)) as executor:
+        futures = {
+            executor.submit(upload_enrollment_photo, subscriber_id=subscriber_id, image_bytes=img): idx
+            for idx, img in enumerate(images)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            idx = futures[future]
+            try:
+                upload_results[idx] = future.result()
+            except S3UploadError as exc:
+                logger.warning("Skipping one reference image upload for %s: %s", subscriber_id, exc)
+    reference_image_urls = [url for url in upload_results if url]
 
     update_payload: dict = {}
     if reference_image_urls:

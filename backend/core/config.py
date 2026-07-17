@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Automated scan sweep (core/scheduler.py) - how often every active
     # subscriber is scanned with no manual trigger required.
     scan_interval_hours: int = 3
+    # Defaults to disabled (fail closed) - the scheduler must be explicitly
+    # turned on via SCHEDULER_ENABLED=true, not just by omitting this var.
+    scheduler_enabled: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:

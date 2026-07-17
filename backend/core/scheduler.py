@@ -108,6 +108,10 @@ def start_scheduler() -> None:
         return
 
     settings = get_settings()
+    if not settings.scheduler_enabled:
+        logger.info("Scan scheduler disabled (SCHEDULER_ENABLED is not true) - not starting")
+        return
+
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(
         _run_scheduled_scan_sweep,
@@ -132,12 +136,18 @@ def stop_scheduler() -> None:
 def get_scheduler_status() -> dict:
     settings = get_settings()
     if _scheduler is None:
-        return {"running": False, "next_run_at": None, "interval_hours": settings.scan_interval_hours}
+        return {
+            "running": False,
+            "enabled": settings.scheduler_enabled,
+            "next_run_at": None,
+            "interval_hours": settings.scan_interval_hours,
+        }
 
     job = _scheduler.get_job(_JOB_ID)
     next_run_at = job.next_run_time.isoformat() if job and job.next_run_time else None
     return {
         "running": _scheduler.running,
+        "enabled": settings.scheduler_enabled,
         "next_run_at": next_run_at,
         "interval_hours": settings.scan_interval_hours,
     }

@@ -15,3 +15,9 @@ anthropic==0.42.0
 stripe==11.4.1
 boto3==1.35.97
 Pillow==11.1.0
+
+# OpenCV pre-filter (rejects candidate images with no face before they reach
+# billed AWS Rekognition CompareFaces calls) - headless build, no GUI/X11
+# deps, matching the Railway container.
+opencv-python-headless==4.10.0.84
+numpy==1.26.4

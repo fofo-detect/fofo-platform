@@ -389,6 +389,7 @@ def get_admin_subscriber(subscriber_id: str):
                 status=ScanStatus(row["status"]),
                 candidates_found=row["candidates_found"],
                 matches_found=row["matches_found"],
+                opencv_filtered=row.get("opencv_filtered") or 0,
                 started_at=row["started_at"],
                 completed_at=row.get("completed_at"),
             )
@@ -493,6 +494,7 @@ def list_admin_scans(
             status=ScanStatus(row["status"]),
             candidates_found=row["candidates_found"],
             matches_found=row["matches_found"],
+            opencv_filtered=row.get("opencv_filtered") or 0,
             started_at=row["started_at"],
             completed_at=row.get("completed_at"),
             subscriber_name=(row.get("subscribers") or {}).get("name"),

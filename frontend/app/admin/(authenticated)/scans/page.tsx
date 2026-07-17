@@ -66,7 +66,11 @@ export default function AdminScanMonitorPage() {
     const avgMatches =
       completed.length > 0 ? completed.reduce((a, s) => a + s.matches_found, 0) / completed.length : null;
 
-    return { successRate, avgSeconds, avgCandidates, avgMatches };
+    const totalCandidates = completed.reduce((a, s) => a + s.candidates_found, 0);
+    const totalOpencvFiltered = completed.reduce((a, s) => a + (s.opencv_filtered ?? 0), 0);
+    const opencvFilterRate = totalCandidates > 0 ? Math.round((totalOpencvFiltered / totalCandidates) * 100) : null;
+
+    return { successRate, avgSeconds, avgCandidates, avgMatches, opencvFilterRate };
   }, [scans]);
 
   return (
@@ -78,7 +82,7 @@ export default function AdminScanMonitorPage() {
 
       {error && <ErrorBanner message={error} />}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatCard
           label="Success Rate"
           value={stats.successRate !== null ? `${stats.successRate}%` : "—"}
@@ -95,6 +99,10 @@ export default function AdminScanMonitorPage() {
         <StatCard
           label="Avg Matches Found"
           value={stats.avgMatches !== null ? stats.avgMatches.toFixed(1) : "—"}
+        />
+        <StatCard
+          label="OpenCV Filtered"
+          value={stats.opencvFilterRate !== null ? `${stats.opencvFilterRate}%` : "—"}
         />
       </div>
 
@@ -176,6 +184,9 @@ export default function AdminScanMonitorPage() {
                 </span>
                 <span>
                   <span className="font-medium text-dash-ink">{scan.matches_found}</span> matches
+                </span>
+                <span>
+                  <span className="font-medium text-dash-ink">{scan.opencv_filtered ?? 0}</span> OpenCV-filtered
                 </span>
                 <span>{formatDuration(scan.started_at, scan.completed_at)}</span>
               </div>

@@ -97,6 +97,8 @@ export interface ScanResponse {
   status: ScanStatus;
   candidates_found: number;
   matches_found: number;
+  // Candidates the OpenCV pre-filter rejected before they reached Rekognition.
+  opencv_filtered?: number;
   started_at: string;
   completed_at: string | null;
 }

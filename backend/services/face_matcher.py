@@ -8,6 +8,7 @@ import httpx
 from botocore.exceptions import ClientError
 
 from core.config import get_settings
+from services import opencv_filter
 from services.face_encoder import normalize_to_jpeg_bytes
 from services.usage_tracker import log_api_call
 
@@ -27,6 +28,9 @@ class MatchResult:
     distance: Optional[float]
     is_thumbnail: bool
     error: Optional[str] = None
+    # True if the OpenCV pre-filter rejected this candidate before Rekognition
+    # was ever called (no face detected locally).
+    opencv_filtered: bool = False
 
 
 def _rekognition_client():
@@ -79,6 +83,15 @@ def match_candidate(reference_image_bytes: bytes, candidate_url: str) -> MatchRe
         return MatchResult(is_match=False, distance=None, is_thumbnail=False, error="download_failed")
 
     is_thumb = _is_thumbnail(image_bytes)
+
+    # Pre-filter: reject candidates with no detectable face locally, before
+    # spending a billed Rekognition CompareFaces call on them.
+    if not opencv_filter.has_face(image_bytes):
+        logger.info("OpenCV pre-filter: no face detected in %s, skipping Rekognition", candidate_url)
+        return MatchResult(
+            is_match=False, distance=None, is_thumbnail=is_thumb, error="opencv_no_face", opencv_filtered=True
+        )
+
     threshold = (
         settings.face_match_similarity_threshold_thumbnail
         if is_thumb

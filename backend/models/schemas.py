@@ -123,6 +123,9 @@ class ScanResponse(BaseModel):
     status: ScanStatus
     candidates_found: int
     matches_found: int
+    # Candidates the OpenCV pre-filter rejected (no face detected locally)
+    # before they ever reached a billed AWS Rekognition CompareFaces call.
+    opencv_filtered: int = 0
     started_at: datetime
     completed_at: Optional[datetime] = None
 

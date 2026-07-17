@@ -432,44 +432,46 @@ def _process_candidate(
     scan_id: str,
     reference_image_bytes: bytes,
     subscriber_data: dict,
-) -> bool:
+) -> tuple[bool, bool]:
     """Full per-candidate pipeline: dedup check, Rekognition face comparison,
     deepfake scoring, risk classification, alerting, and the detections
     insert. Runs inside a thread pool (up to CANDIDATE_CONCURRENCY at once,
     since boto3/httpx here are synchronous - this is genuine thread-level
     parallelism, not asyncio). Every failure mode is caught internally so a
-    single bad candidate never propagates out of the pool. Returns True if
-    this candidate produced a new detection.
+    single bad candidate never propagates out of the pool. Returns
+    (created_detection, opencv_filtered) - opencv_filtered is True if the
+    OpenCV pre-filter rejected this candidate before Rekognition was called.
     """
     supabase = get_supabase()
     candidate_image_url = candidate.get("image") or candidate.get("thumbnail")
     source_url = candidate.get("link")
     if not candidate_image_url:
-        return False
+        return False, False
 
     try:
         # Cross-scan dedup: never re-download/re-compare a URL this subscriber
         # has already had checked in a previous scan, whether or not it turned
         # out to be a match.
         if _is_url_already_scanned(supabase, subscriber_id, candidate_image_url):
-            return False
+            return False, False
         _mark_url_scanned(supabase, subscriber_id, candidate_image_url)
 
         match_result = face_matcher.match_candidate(reference_image_bytes, candidate_image_url)
+        opencv_filtered = match_result.opencv_filtered
         # Name-search candidates carry their own stricter bar (85% by default)
         # instead of the usual thumbnail/full is_match threshold - a common
         # name alone must never be enough to create a detection.
         min_similarity = candidate.get("_min_similarity")
         if min_similarity is not None:
             if match_result.distance is None or match_result.distance < min_similarity:
-                return False
+                return False, opencv_filtered
         elif not match_result.is_match:
-            return False
+            return False, opencv_filtered
 
         # Belt-and-braces: don't insert a second detections row for the same
         # image even if it somehow slipped past the scanned_urls gate.
         if _detection_already_exists(supabase, subscriber_id, candidate_image_url):
-            return False
+            return False, opencv_filtered
 
         platform = candidate.get("_platform") or _derive_platform(source_url or candidate.get("source"))
 
@@ -527,10 +529,10 @@ def _process_candidate(
         except Exception:  # noqa: BLE001 - `source` column may not exist until migration 008 is applied
             detection_row.pop("source", None)
             supabase.table("detections").insert(detection_row).execute()
-        return True
+        return True, opencv_filtered
     except Exception as exc:  # noqa: BLE001 - one bad candidate must not abort the whole scan
         logger.error("Skipping candidate %s after unexpected error: %s", candidate_image_url, exc)
-        return False
+        return False, False
 
 
 def _run_scan_background(
@@ -579,6 +581,7 @@ def _run_scan_background(
         # version wrote in a single update at the very end.
         checked = 0
         matches_found = 0
+        opencv_filtered_count = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=CANDIDATE_CONCURRENCY) as executor:
             futures = [
                 executor.submit(
@@ -588,8 +591,11 @@ def _run_scan_background(
             ]
             for future in concurrent.futures.as_completed(futures):
                 checked += 1
-                if future.result():
+                created_detection, opencv_filtered = future.result()
+                if created_detection:
                     matches_found += 1
+                if opencv_filtered:
+                    opencv_filtered_count += 1
                 # Throttled (every 3rd candidate) and best-effort: this is a progress
                 # indicator for the dashboard, not correctness-critical, and the final
                 # update below always writes the true count regardless. A transient
@@ -604,14 +610,29 @@ def _run_scan_background(
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("Scan %s progress update failed, continuing: %s", scan_id, exc)
 
-        supabase.table("scans").update(
-            {
-                "status": ScanStatus.COMPLETED.value,
-                "candidates_found": len(candidates),
-                "matches_found": matches_found,
-                "completed_at": _now(),
-            }
-        ).eq("id", scan_id).execute()
+        reached_rekognition = len(candidates) - opencv_filtered_count
+        logger.info(
+            "Scan %s: OpenCV pre-filter rejected %d/%d candidate(s) (%.0f%%) before Rekognition, "
+            "%d candidate(s) reached Rekognition",
+            scan_id,
+            opencv_filtered_count,
+            len(candidates),
+            (opencv_filtered_count / len(candidates) * 100) if candidates else 0,
+            reached_rekognition,
+        )
+
+        completed_update = {
+            "status": ScanStatus.COMPLETED.value,
+            "candidates_found": len(candidates),
+            "matches_found": matches_found,
+            "completed_at": _now(),
+        }
+        try:
+            supabase.table("scans").update({**completed_update, "opencv_filtered": opencv_filtered_count}).eq(
+                "id", scan_id
+            ).execute()
+        except Exception:  # noqa: BLE001 - opencv_filtered column may not exist until migration 010 is applied
+            supabase.table("scans").update(completed_update).eq("id", scan_id).execute()
     except Exception as exc:  # noqa: BLE001 - never leave a scan stuck at "running" on an unexpected error
         logger.exception("Scan %s failed with an unexpected error", scan_id)
         _fail_scan(scan_id, f"Unexpected error: {exc}")
@@ -691,6 +712,7 @@ def list_scans(subscriber_id: str):
                 status=ScanStatus(row["status"]),
                 candidates_found=row["candidates_found"],
                 matches_found=row["matches_found"],
+                opencv_filtered=row.get("opencv_filtered") or 0,
                 started_at=row["started_at"],
                 completed_at=row.get("completed_at"),
             )
@@ -712,6 +734,7 @@ def get_scan_status(scan_id: str):
         status=ScanStatus(scan.data["status"]),
         candidates_found=scan.data["candidates_found"],
         matches_found=scan.data["matches_found"],
+        opencv_filtered=scan.data.get("opencv_filtered") or 0,
         started_at=scan.data["started_at"],
         completed_at=scan.data.get("completed_at"),
     )

@@ -12,7 +12,7 @@ import { EMAIL_PATTERN, PHONE_HINT, PHONE_PATTERN } from "@/lib/validation";
 
 export default function RegisterPage() {
   const router = useRouter();
-  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "" });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", profession: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,7 +42,7 @@ export default function RegisterPage() {
     }
     setLoading(true);
     try {
-      const result = await signup(form);
+      const result = await signup({ ...form, profession: form.profession.trim() || undefined });
       saveSession({
         subscriberId: result.user_id,
         accessToken: result.access_token ?? undefined,
@@ -92,6 +92,14 @@ export default function RegisterPage() {
             value={form.phone}
             onChange={(e) => setForm({ ...form, phone: e.target.value })}
             placeholder="+91 98765 43210"
+          />
+          <Input
+            id="profession"
+            label="Profession (optional)"
+            autoComplete="organization-title"
+            value={form.profession}
+            onChange={(e) => setForm({ ...form, profession: e.target.value })}
+            placeholder="e.g. Actor, Politician, CEO"
           />
           <Input
             id="password"

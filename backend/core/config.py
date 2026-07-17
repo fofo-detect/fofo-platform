@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # rather than accepting a blank password.
     admin_password: str = ""
 
+    # Automated scan sweep (core/scheduler.py) - how often every active
+    # subscriber is scanned with no manual trigger required.
+    scan_interval_hours: int = 3
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

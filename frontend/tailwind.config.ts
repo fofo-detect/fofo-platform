@@ -26,6 +26,25 @@ const config: Config = {
       fontFamily: {
         sans: ["ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
       },
+      keyframes: {
+        "mesh-pulse": {
+          "0%, 100%": { opacity: "0.4", transform: "scale(1)" },
+          "50%": { opacity: "1", transform: "scale(1.6)" },
+        },
+        "scan-sweep": {
+          "0%": { transform: "translateY(-20px)" },
+          "100%": { transform: "translateY(400px)" },
+        },
+        "fade-up": {
+          "0%": { opacity: "0", transform: "translateY(12px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+      },
+      animation: {
+        "mesh-pulse": "mesh-pulse 2.4s ease-in-out infinite",
+        "scan-sweep": "scan-sweep 3.2s linear infinite",
+        "fade-up": "fade-up 0.6s ease-out both",
+      },
     },
   },
   plugins: [],

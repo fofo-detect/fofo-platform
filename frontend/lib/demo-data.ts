@@ -80,6 +80,9 @@ function buildDetections(now: Date): Detection[] {
     const millisAgo = daysAgo * 86_400_000 + randomInt(0, 23) * 3_600_000 + randomInt(0, 59) * 60_000;
     const createdAt = new Date(now.getTime() - millisAgo).toISOString();
 
+    const searchSources = ["google_lens", "bing", "yandex"];
+    const source = spec.platform === "YouTube" ? "youtube" : searchSources[i % searchSources.length];
+
     const detection: Detection = {
       id: `demo-detection-${i + 1}`,
       subscriber_id: "demo-subscriber",
@@ -87,12 +90,15 @@ function buildDetections(now: Date): Detection[] {
       image_url: `https://i.pravatar.cc/150?img=${(i % 70) + 1}`,
       source_url: spec.buildUrl(i + 1),
       platform: spec.platform,
+      source,
       distance_score: distanceScore,
       deepfake_score: deepfakeScore,
       risk_level: level,
       alert_message: buildAlertMessage(level, spec.platform, deepfakeScore),
       alerted_at: level === "HIGH" || level === "CRITICAL" ? createdAt : null,
       created_at: createdAt,
+      reported: false,
+      reported_at: null,
     };
     return detection;
   });

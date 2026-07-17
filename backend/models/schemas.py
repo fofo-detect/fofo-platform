@@ -39,6 +39,9 @@ class SignupRequest(BaseModel):
     password: str = Field(min_length=8)
     name: str = Field(min_length=1, max_length=200)
     phone: str = Field(min_length=6, max_length=20)
+    # Optional - used to target the name-based deepfake text searches, e.g.
+    # "[name] actor deepfake" instead of just "[name] deepfake".
+    profession: Optional[str] = Field(default=None, max_length=100)
 
 
 class LoginRequest(BaseModel):
@@ -139,12 +142,18 @@ class DetectionOut(BaseModel):
     image_url: Optional[str] = None
     source_url: Optional[str] = None
     platform: Optional[str] = None
+    # Which search engine found this candidate: google_lens, bing, yandex,
+    # youtube, or name_search (Task 3's text-based pipeline). Distinct from
+    # `platform`, which is the site/app the image was found on.
+    source: Optional[str] = None
     distance_score: Optional[float] = None
     deepfake_score: Optional[float] = None
     risk_level: Optional[RiskLevel] = None
     alert_message: Optional[str] = None
     alerted_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
+    reported: bool = False
+    reported_at: Optional[datetime] = None
 
 
 class DetectionsListResponse(BaseModel):

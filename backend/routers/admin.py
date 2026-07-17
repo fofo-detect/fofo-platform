@@ -31,6 +31,7 @@ from models.schemas import (
     ScanStatus,
     UpdateSubscriberStatusRequest,
 )
+from core.scheduler import get_scheduler_status
 from routers.scan import run_scan as _run_scan_for_subscriber
 from services.business_metrics import (
     MONTHLY_PRICE_INR,
@@ -70,6 +71,11 @@ def admin_login(payload: AdminLoginRequest, request: Request):
         record_failed_login(request)
         raise HTTPException(status_code=401, detail="Incorrect password")
     return AdminLoginResponse(token=create_admin_token())
+
+
+@router.get("/scheduler/status", dependencies=[Depends(require_admin)])
+def admin_scheduler_status():
+    return get_scheduler_status()
 
 
 def _time_boundaries() -> dict:

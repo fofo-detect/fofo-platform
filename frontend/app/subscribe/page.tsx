@@ -55,7 +55,7 @@ export default function SubscribePage() {
           <Card className="flex flex-col">
             <p className="text-sm uppercase tracking-widest text-neutral-500">Monthly</p>
             <p className="mt-3 text-4xl font-bold text-white">
-              ₹50,000<span className="text-base font-normal text-neutral-500">/mo</span>
+              $599<span className="text-base font-normal text-neutral-500">/mo</span>
             </p>
             <p className="mt-2 text-sm text-neutral-500">Billed every month, cancel anytime.</p>
             <Button
@@ -71,7 +71,7 @@ export default function SubscribePage() {
           <Card className="flex flex-col border-brand-red/60">
             <p className="text-sm uppercase tracking-widest text-neutral-500">Annual</p>
             <p className="mt-3 text-4xl font-bold text-white">
-              ₹500,000<span className="text-base font-normal text-neutral-500">/yr</span>
+              $5,990<span className="text-base font-normal text-neutral-500">/yr</span>
             </p>
             <p className="mt-2 text-sm text-neutral-500">Two months free versus monthly billing.</p>
             <Button

@@ -3,7 +3,7 @@ import concurrent.futures
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -25,6 +25,19 @@ router = APIRouter(tags=["scan"])
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
 SERPAPI_TIMEOUT_SECONDS = 30.0
 CANDIDATE_CONCURRENCY = 10
+
+# Name-based text search (Task: find deepfakes that never surface via
+# reverse image search because the fabricated content has no visually-
+# indexed source photo). Deliberately capped tight - this is the single
+# most expensive branch of a scan, since each extracted image costs one
+# more Rekognition call on top of everything the visual searches already
+# found.
+NAME_SEARCH_KEYWORDS = ["deepfake", "fake video", "fake endorsement", "AI generated"]
+NAME_SEARCH_MATCH_THRESHOLD = 85.0
+NAME_SEARCH_MAX_RESULTS_PER_QUERY = 5
+NAME_SEARCH_MAX_IMAGES_PER_PAGE = 5
+PAGE_DOWNLOAD_TIMEOUT_SECONDS = 15.0
+MAX_PAGE_BYTES = 5 * 1024 * 1024
 
 
 def _now() -> str:
@@ -48,48 +61,131 @@ async def _search_google_lens_async(client: httpx.AsyncClient, image_url: str, m
     if "error" in data:
         raise RuntimeError(f"SerpAPI error: {data['error']}")
 
-    visual_matches = data.get("visual_matches", [])
-    return visual_matches[:max_results]
+    visual_matches = data.get("visual_matches", [])[:max_results]
+    for match in visual_matches:
+        match["_source"] = "google_lens"
+    return visual_matches
+
+
+async def _search_bing_async(client: httpx.AsyncClient, image_url: str, max_results: int) -> list[dict]:
+    """Bing reverse image search via SerpAPI (engine=bing_reverse_image,
+    verified live against the real API - this is a distinct SerpAPI product
+    from the plain "Bing Images" text-search engine and was confirmed by
+    manual testing, not assumed from documentation). Its related_content[]
+    entries use original/source instead of Google Lens's image/link -
+    normalized to the same {"image", "link"} shape here so every downstream
+    candidate looks identical to _process_candidate regardless of source.
+    """
+    settings = get_settings()
+    params = {"engine": "bing_reverse_image", "image_url": image_url, "api_key": settings.serpapi_key}
+    log_api_call("serpapi")
+    try:
+        resp = await client.get(SERPAPI_ENDPOINT, params=params, timeout=SERPAPI_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        raise RuntimeError(f"SerpAPI Bing request failed: {exc}") from exc
+
+    if "error" in data:
+        raise RuntimeError(f"SerpAPI Bing error: {data['error']}")
+
+    results = data.get("related_content", [])[:max_results]
+    return [
+        {"image": item.get("original"), "link": item.get("source"), "_source": "bing"}
+        for item in results
+        if item.get("original")
+    ]
+
+
+async def _search_yandex_async(client: httpx.AsyncClient, image_url: str, max_results: int) -> list[dict]:
+    """Yandex reverse image search via SerpAPI (engine=yandex_images with
+    rpt=imageview - verified live; a plain `image_url` param, unlike Bing,
+    returns a 400 for this engine, it needs `url` + rpt=imageview to match
+    Yandex's own reverse-image URL scheme). image_results[] entries use
+    original_image.link/link, normalized the same way as Bing above.
+    """
+    settings = get_settings()
+    params = {"engine": "yandex_images", "url": image_url, "rpt": "imageview", "api_key": settings.serpapi_key}
+    log_api_call("serpapi")
+    try:
+        resp = await client.get(SERPAPI_ENDPOINT, params=params, timeout=SERPAPI_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        raise RuntimeError(f"SerpAPI Yandex request failed: {exc}") from exc
+
+    if "error" in data:
+        raise RuntimeError(f"SerpAPI Yandex error: {data['error']}")
+
+    results = data.get("image_results", [])[:max_results]
+    return [
+        {"image": (item.get("original_image") or {}).get("link"), "link": item.get("link"), "_source": "yandex"}
+        for item in results
+        if (item.get("original_image") or {}).get("link")
+    ]
+
+
+_VISUAL_SEARCH_ENGINES = [
+    ("google_lens", _search_google_lens_async),
+    ("bing", _search_bing_async),
+    ("yandex", _search_yandex_async),
+]
 
 
 async def _gather_searches(
     reference_image_urls: list[str], max_results_each: int
-) -> list[Union[list[dict], BaseException]]:
+) -> list[tuple[str, str, Union[list[dict], BaseException]]]:
+    """Runs Google Lens, Bing, and Yandex reverse image search for every
+    enrolled reference photo, all concurrently via one asyncio.gather() call -
+    3x len(reference_image_urls) requests fired in parallel, not one engine or
+    photo at a time. Returns (engine, image_url, result_or_exception) tuples
+    so a failure can be logged precisely instead of just "something failed".
+    """
     async with httpx.AsyncClient() as client:
-        return await asyncio.gather(
-            *[_search_google_lens_async(client, url, max_results_each) for url in reference_image_urls],
-            return_exceptions=True,
-        )
+        jobs = [
+            (engine_name, image_url, search_fn(client, image_url, max_results_each))
+            for image_url in reference_image_urls
+            for engine_name, search_fn in _VISUAL_SEARCH_ENGINES
+        ]
+        outcomes = await asyncio.gather(*(job[2] for job in jobs), return_exceptions=True)
+        return [(job[0], job[1], outcome) for job, outcome in zip(jobs, outcomes)]
 
 
 def _search_all_reference_images(reference_image_urls: list[str], max_results_each: int) -> list[dict]:
-    """Search every enrolled photo concurrently (asyncio.gather, not a
-    sequential loop) and merge the results, deduplicated by candidate image
-    URL - the same match often turns up from more than one reference photo.
-    An individual search failure is logged and skipped rather than failing
-    the whole scan; only fail outright if every single search fails.
+    """Search every enrolled photo against three engines concurrently and
+    merge the results, deduplicated by candidate image URL - the same match
+    often turns up from more than one engine or reference photo. An
+    individual (engine, photo) search failure is logged and skipped rather
+    than failing the whole scan; only fail outright if every single search
+    (all engines, all photos) fails.
 
     asyncio.run() is safe here because this whole function runs inside a
     BackgroundTasks worker thread, not on FastAPI's main event loop thread.
     """
-    results_per_search = asyncio.run(_gather_searches(reference_image_urls, max_results_each))
+    results = asyncio.run(_gather_searches(reference_image_urls, max_results_each))
 
     merged: dict[str, dict] = {}
     failures = 0
 
-    for image_url, results in zip(reference_image_urls, results_per_search):
-        if isinstance(results, BaseException):
+    for engine_name, image_url, outcome in results:
+        if isinstance(outcome, BaseException):
             failures += 1
-            logger.warning("Google Lens search failed for reference image %s: %s", image_url, results)
+            logger.warning("%s search failed for reference image %s: %s", engine_name, image_url, outcome)
             continue
 
-        for candidate in results:
+        for candidate in outcome:
             candidate_url = candidate.get("image") or candidate.get("thumbnail")
             if candidate_url and candidate_url not in merged:
                 merged[candidate_url] = candidate
 
-    if failures == len(reference_image_urls):
-        raise RuntimeError("All Google Lens searches failed")
+    if results and failures == len(results):
+        raise RuntimeError("All visual searches failed")
+
+    source_counts: dict[str, int] = {}
+    for candidate in merged.values():
+        src = candidate.get("_source", "unknown")
+        source_counts[src] = source_counts.get(src, 0) + 1
+    logger.info("Visual search merged %d unique candidate(s): %s", len(merged), source_counts)
 
     return list(merged.values())
 
@@ -119,9 +215,150 @@ def _search_youtube(subscriber_name: Optional[str], scan_id: str) -> list[dict]:
             "image": video["thumbnail_url"],
             "link": video["video_url"],
             "_platform": "YouTube",
+            "_source": "youtube",
         }
         for video in videos
     ]
+
+
+def _build_name_search_queries(name: str, profession: Optional[str]) -> list[str]:
+    prefix = f"{name} {profession}".strip() if profession else name
+    return [f"{prefix} {keyword}" for keyword in NAME_SEARCH_KEYWORDS]
+
+
+async def _search_google_text_async(client: httpx.AsyncClient, query: str, max_results: int) -> list[dict]:
+    settings = get_settings()
+    params = {"engine": "google", "q": query, "api_key": settings.serpapi_key}
+    log_api_call("serpapi")
+    try:
+        resp = await client.get(SERPAPI_ENDPOINT, params=params, timeout=SERPAPI_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        raise RuntimeError(f"SerpAPI Google text search failed for {query!r}: {exc}") from exc
+
+    if "error" in data:
+        raise RuntimeError(f"SerpAPI Google error for {query!r}: {data['error']}")
+
+    return data.get("organic_results", [])[:max_results]
+
+
+async def _fetch_page_image_urls(client: httpx.AsyncClient, page_url: str, max_images: int) -> list[str]:
+    """Download a result page and extract absolute image URLs from it.
+    Best-effort only: a non-HTML response, an oversized page, a network
+    failure, or malformed markup all just yield an empty list rather than
+    raising - a single bad page must never abort the name-search branch of
+    a scan, let alone the whole scan.
+    """
+    try:
+        resp = await client.get(
+            page_url,
+            timeout=PAGE_DOWNLOAD_TIMEOUT_SECONDS,
+            headers={"User-Agent": "Mozilla/5.0 (FOFO Face Monitor)"},
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        logger.warning("Name-search: could not download page %s: %s", page_url, exc)
+        return []
+
+    if "html" not in resp.headers.get("content-type", "").lower():
+        return []
+    if len(resp.content) > MAX_PAGE_BYTES:
+        return []
+
+    from bs4 import BeautifulSoup  # lazy: keeps bs4 off the startup path
+
+    try:
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception as exc:  # noqa: BLE001 - malformed HTML must not abort the scan
+        logger.warning("Name-search: could not parse page %s: %s", page_url, exc)
+        return []
+
+    image_urls: list[str] = []
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src")
+        if not src:
+            continue
+        absolute = urljoin(page_url, src)
+        if absolute.startswith("http") and absolute not in image_urls:
+            image_urls.append(absolute)
+        if len(image_urls) >= max_images:
+            break
+
+    return image_urls
+
+
+async def _gather_name_search_candidates(queries: list[str]) -> list[dict]:
+    async with httpx.AsyncClient() as client:
+        query_results = await asyncio.gather(
+            *[_search_google_text_async(client, q, NAME_SEARCH_MAX_RESULTS_PER_QUERY) for q in queries],
+            return_exceptions=True,
+        )
+
+        page_urls: list[str] = []
+        for results in query_results:
+            if isinstance(results, BaseException):
+                continue
+            for result in results:
+                link = result.get("link")
+                if link and link not in page_urls:
+                    page_urls.append(link)
+
+        if not page_urls:
+            return []
+
+        pages_images = await asyncio.gather(
+            *[_fetch_page_image_urls(client, url, NAME_SEARCH_MAX_IMAGES_PER_PAGE) for url in page_urls],
+            return_exceptions=True,
+        )
+
+    candidates: list[dict] = []
+    for page_url, images in zip(page_urls, pages_images):
+        if isinstance(images, BaseException):
+            continue
+        for image_url in images:
+            candidates.append(
+                {
+                    "image": image_url,
+                    "link": page_url,
+                    "_source": "name_search",
+                    "_min_similarity": NAME_SEARCH_MATCH_THRESHOLD,
+                }
+            )
+    return candidates
+
+
+def _search_by_name(subscriber_name: Optional[str], profession: Optional[str], scan_id: str) -> list[dict]:
+    """Text-based search for deepfakes reverse image search never finds (a
+    fabricated video with no visually-indexed source thumbnail, for example).
+    Never fatal to the scan - any failure just means this bonus source
+    contributes nothing.
+
+    Candidates are NOT pre-matched here; they carry a _min_similarity tag so
+    the shared _process_candidate pipeline below is the one and only place
+    that actually calls Rekognition on them, gated at 85% confidence instead
+    of the usual 80/90 thumbnail/full threshold - a common name alone must
+    never be enough to create a detection, only a confirmed face match is.
+    """
+    if not subscriber_name:
+        logger.info("Scan %s: subscriber has no name on file, skipping name-based search", scan_id)
+        return []
+
+    queries = _build_name_search_queries(subscriber_name, profession)
+    try:
+        candidates = asyncio.run(_gather_name_search_candidates(queries))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Scan %s: name-based search failed, continuing without it: %s", scan_id, exc)
+        return []
+
+    logger.info(
+        "Scan %s: name-based search extracted %d image(s) to face-match at %.0f%%+ confidence",
+        scan_id,
+        len(candidates),
+        NAME_SEARCH_MATCH_THRESHOLD,
+    )
+    return candidates
 
 
 def _derive_platform(source_url: Optional[str]) -> Optional[str]:
@@ -132,6 +369,18 @@ def _derive_platform(source_url: Optional[str]) -> Optional[str]:
     except ValueError:
         return None
     return host[4:] if host.startswith("www.") else host or None
+
+
+def _resolve_reference_image_urls(subscriber_data: dict) -> list[str]:
+    """reference_image_urls (plural) holds every enrolled angle from the camera
+    capture flow. Older subscribers enrolled before that existed only have the
+    singular reference_image_url, so fall back to a one-element list. Shared
+    by the manual /scan endpoint and the scheduled sweep (core/scheduler.py)."""
+    reference_image_urls = subscriber_data.get("reference_image_urls")
+    if not reference_image_urls:
+        single = subscriber_data.get("reference_image_url")
+        reference_image_urls = [single] if single else []
+    return reference_image_urls
 
 
 def _fail_scan(scan_id: str, error_message: Optional[str] = None) -> None:
@@ -207,7 +456,14 @@ def _process_candidate(
         _mark_url_scanned(supabase, subscriber_id, candidate_image_url)
 
         match_result = face_matcher.match_candidate(reference_image_bytes, candidate_image_url)
-        if not match_result.is_match:
+        # Name-search candidates carry their own stricter bar (85% by default)
+        # instead of the usual thumbnail/full is_match threshold - a common
+        # name alone must never be enough to create a detection.
+        min_similarity = candidate.get("_min_similarity")
+        if min_similarity is not None:
+            if match_result.distance is None or match_result.distance < min_similarity:
+                return False
+        elif not match_result.is_match:
             return False
 
         # Belt-and-braces: don't insert a second detections row for the same
@@ -244,6 +500,7 @@ def _process_candidate(
             "image_url": candidate_image_url,
             "source_url": source_url,
             "platform": platform,
+            "source": candidate.get("_source"),
             "distance_score": match_result.distance,
             "deepfake_score": deepfake_score,
             "risk_level": risk_level.value,
@@ -265,7 +522,11 @@ def _process_candidate(
             except WhatsAppSendError as exc:
                 logger.error("WhatsApp alert failed for subscriber %s: %s", subscriber_id, exc)
 
-        supabase.table("detections").insert(detection_row).execute()
+        try:
+            supabase.table("detections").insert(detection_row).execute()
+        except Exception:  # noqa: BLE001 - `source` column may not exist until migration 008 is applied
+            detection_row.pop("source", None)
+            supabase.table("detections").insert(detection_row).execute()
         return True
     except Exception as exc:  # noqa: BLE001 - one bad candidate must not abort the whole scan
         logger.error("Skipping candidate %s after unexpected error: %s", candidate_image_url, exc)
@@ -302,11 +563,15 @@ def _run_scan_background(
             _fail_scan(scan_id, f"Image search failed: {exc}")
             return
 
-        # Second candidate source: YouTube videos matching the subscriber's name.
-        # Merged into the same candidate pool/thread pool below rather than run
-        # as a separate pass, so dedup, progress tracking, and matches_found all
-        # naturally cover both sources together.
+        # Additional candidate sources: YouTube videos matching the subscriber's
+        # name, and images extracted from pages found by name-based deepfake
+        # text searches. Merged into the same candidate pool/thread pool below
+        # rather than run as separate passes, so dedup, progress tracking, and
+        # matches_found all naturally cover every source together.
         candidates = candidates + _search_youtube(subscriber_data.get("name"), scan_id)
+        candidates = candidates + _search_by_name(
+            subscriber_data.get("name"), subscriber_data.get("profession"), scan_id
+        )
 
         # candidates_found doubles as the live "checked so far" counter while the
         # scan is running (polled by the dashboard) - it converges to len(candidates)
@@ -363,13 +628,7 @@ def run_scan(subscriber_id: str, background_tasks: BackgroundTasks):
     if subscriber.data.get("account_status") == "suspended":
         raise HTTPException(status_code=403, detail="This account has been suspended")
 
-    # reference_image_urls (plural) holds every enrolled angle from the camera
-    # capture flow. Older subscribers enrolled before that existed only have the
-    # singular reference_image_url, so fall back to a one-element list.
-    reference_image_urls = subscriber.data.get("reference_image_urls")
-    if not reference_image_urls:
-        single = subscriber.data.get("reference_image_url")
-        reference_image_urls = [single] if single else []
+    reference_image_urls = _resolve_reference_image_urls(subscriber.data)
 
     if not reference_image_urls:
         raise HTTPException(status_code=400, detail="Subscriber has not completed face enrollment")

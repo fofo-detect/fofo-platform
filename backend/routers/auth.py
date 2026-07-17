@@ -34,18 +34,25 @@ def signup(payload: SignupRequest):
 
     user_id = auth_result.user.id
 
+    subscriber_row = {
+        "id": user_id,
+        "email": payload.email,
+        "name": payload.name,
+        "phone": payload.phone,
+        "profession": payload.profession,
+    }
     try:
-        get_supabase().table("subscribers").insert(
-            {
-                "id": user_id,
-                "email": payload.email,
-                "name": payload.name,
-                "phone": payload.phone,
-            }
-        ).execute()
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to create subscriber row for %s: %s", user_id, exc)
-        raise HTTPException(status_code=500, detail="Signup succeeded but subscriber profile creation failed") from exc
+        get_supabase().table("subscribers").insert(subscriber_row).execute()
+    except Exception as exc:  # noqa: BLE001 - `profession` column may not exist until migration 009 is applied
+        logger.warning("Retrying subscriber row for %s without profession: %s", user_id, exc)
+        subscriber_row.pop("profession", None)
+        try:
+            get_supabase().table("subscribers").insert(subscriber_row).execute()
+        except Exception as exc2:  # noqa: BLE001
+            logger.error("Failed to create subscriber row for %s: %s", user_id, exc2)
+            raise HTTPException(
+                status_code=500, detail="Signup succeeded but subscriber profile creation failed"
+            ) from exc2
 
     session = auth_result.session
     return AuthResponse(

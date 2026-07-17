@@ -1,9 +1,40 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { DashCard, EmptyState, PlatformLabel, RiskBadge } from "@/components/dashboard/ui";
-import { Detection, RiskLevel } from "@/lib/api";
+import { DashButton, DashCard, EmptyState, PlatformLabel, RiskBadge } from "@/components/dashboard/ui";
+import { Detection, RiskLevel, reportDetection } from "@/lib/api";
 import { formatDate, formatScore, sourceHost } from "@/lib/format";
+
+// Stable, top-level help/report domains rather than specific deep-link
+// article IDs - those change often and an unverifiable guess is worse than
+// a slightly less convenient but definitely-correct starting point.
+const PLATFORM_REPORT_URLS: Record<string, string> = {
+  "instagram.com": "https://help.instagram.com",
+  "facebook.com": "https://www.facebook.com/help",
+  "twitter.com": "https://help.twitter.com",
+  "x.com": "https://help.twitter.com",
+  "tiktok.com": "https://www.tiktok.com/legal/report/feedback",
+};
+
+function extractYouTubeVideoId(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes("youtube.com")) return parsed.searchParams.get("v");
+    if (parsed.hostname === "youtu.be") return parsed.pathname.slice(1) || null;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function getReportUrl(detection: Detection): string {
+  if (detection.platform === "YouTube" && detection.source_url) {
+    const videoId = extractYouTubeVideoId(detection.source_url);
+    if (videoId) return `https://www.youtube.com/watch?v=${videoId}&action=flag`;
+  }
+  const platformKey = (detection.platform || "").toLowerCase();
+  return PLATFORM_REPORT_URLS[platformKey] || detection.source_url || "#";
+}
 
 const RISK_FILTERS: Array<{ label: string; value: RiskLevel | "ALL" }> = [
   { label: "All", value: "ALL" },
@@ -133,6 +164,25 @@ export function DetectionsTable({
 }
 
 function DetectionRow({ detection }: { detection: Detection }) {
+  const [reported, setReported] = useState(detection.reported);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [reporting, setReporting] = useState(false);
+
+  async function handleConfirmReport() {
+    setReporting(true);
+    try {
+      window.open(getReportUrl(detection), "_blank", "noopener,noreferrer");
+      await reportDetection(detection.id);
+      setReported(true);
+    } catch {
+      // Best-effort: the report tab still opened for the user even if our
+      // own reported-flag write failed - not worth blocking on.
+    } finally {
+      setReporting(false);
+      setShowConfirm(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:gap-4">
       {detection.image_url ? (
@@ -179,7 +229,43 @@ function DetectionRow({ detection }: { detection: Detection }) {
           <p className="text-sm font-medium text-dash-ink">{formatDate(detection.created_at)}</p>
         </div>
         <RiskBadge level={detection.risk_level} />
+        <DashButton
+          variant="secondary"
+          className="px-2.5 py-1.5 text-xs"
+          disabled={reported}
+          onClick={() => setShowConfirm(true)}
+        >
+          {reported ? "Reported ✓" : "Report"}
+        </DashButton>
       </div>
+
+      {showConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => !reporting && setShowConfirm(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold text-dash-ink">
+              Report this content to {detection.platform || "the platform"}?
+            </h3>
+            <p className="mt-2 text-sm text-dash-sub">
+              FOFO will submit an abuse report on your behalf. A report page for{" "}
+              {detection.platform || "this platform"} will open in a new tab.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <DashButton variant="secondary" onClick={() => setShowConfirm(false)} disabled={reporting}>
+                Cancel
+              </DashButton>
+              <DashButton onClick={handleConfirmReport} loading={reporting}>
+                Confirm
+              </DashButton>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

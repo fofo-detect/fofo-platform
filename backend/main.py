@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.config import get_settings
+from core.scheduler import start_scheduler, stop_scheduler
 from routers import admin, alerts, auth, detections, enroll, scan, subscribers, webhook
 
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +38,16 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.on_event("startup")
+def on_startup():
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    stop_scheduler()
 
 
 app.include_router(auth.router)

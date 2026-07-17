@@ -72,12 +72,15 @@ export interface Detection {
   image_url: string | null;
   source_url: string | null;
   platform: string | null;
+  source: string | null;
   distance_score: number | null;
   deepfake_score: number | null;
   risk_level: RiskLevel | null;
   alert_message: string | null;
   alerted_at: string | null;
   created_at: string | null;
+  reported: boolean;
+  reported_at: string | null;
 }
 
 export interface DetectionsListResponse {
@@ -123,6 +126,7 @@ export async function signup(data: {
   password: string;
   name: string;
   phone: string;
+  profession?: string;
 }): Promise<AuthResponse> {
   const res = await fetch(`${API_URL}/auth/signup`, {
     method: "POST",
@@ -226,4 +230,9 @@ export async function changePassword(accessToken: string, newPassword: string): 
 export async function sendTestAlert(subscriberId: string): Promise<{ message: string }> {
   const res = await fetch(`${API_URL}/alerts/test/${subscriberId}`, { method: "POST" });
   return handleResponse<{ message: string }>(res);
+}
+
+export async function reportDetection(detectionId: string): Promise<Detection> {
+  const res = await fetch(`${API_URL}/detections/${detectionId}/report`, { method: "PATCH" });
+  return handleResponse<Detection>(res);
 }
